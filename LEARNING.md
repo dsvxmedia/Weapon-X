@@ -222,3 +222,37 @@ orchestrator's own tool calls, not just sub-agents'; weak-PASS runs (majority `a
 claims) now get captured into `benchmark/weaponx/` tagged `weak-pass`, not just outright
 rejections; and content pulled in through a connector is now explicitly flagged as
 untrusted input, consistent with treating any fetched external content that way.
+
+## 2026-06-30 — Retry-cap fix, verified for real (not just re-read and trusted)
+
+Built a deliberately unsatisfiable fixture (two tests asserting contradictory outcomes for
+the same input — no implementation can pass both) specifically so REJECT would be
+guaranteed regardless of generator competence, then ran the exact bypass scenario the
+earlier fix was supposed to close:
+
+1. Invocation 1, `MAX_CYCLES=1`: generator correctly recognized the contradiction and
+   made no changes rather than faking a pass. Evaluator (dispatched on the haiku tier —
+   first real exercise of the model-tiering fix) independently confirmed REJECT.
+   Cycle count hit 1/1 → `hit-retry-cap`, as expected.
+2. Invocation 2, same task, same `MAX_CYCLES=1`: **this was the actual test.** Before the
+   fix, this would have reset the cycle count to zero and spent a full second generate/
+   verify cycle for free. Instead, Discovery found the prior `hit-retry-cap` trace,
+   carried the cycle count forward, saw it already met the cap, and stopped immediately —
+   zero sub-agent dispatches, zero cost. Confirmed correct.
+
+One new, small finding from the run itself: the evaluator labeled this REJECT
+`wrong-tool-choice` in its structured output, then explained in its own reasoning that
+the real issue was task-impossibility — which is exactly what `other-with-detail` is for.
+The taxonomy has the right category, the evaluator just didn't reach for it. Logged in
+`memory/weaponx/MEMORY.md` as a durable fact rather than fixed by force — it's a one-off
+labeling choice, not a structural problem, and one real data point isn't enough to justify
+rewriting the evaluator's instructions yet. `benchmark/weaponx/retry-cap-double.md`
+captures this specific case so `weaponx-calibrate` can later check whether the label
+improves once there's more than one data point.
+
+Also confirmed live: the notification-on-human-gate behavior was correctly *not* fired
+during either invocation, because the notification tool's own guidance is explicit about
+not paging someone who's clearly still watching — which was the right call here, but
+worth remembering this hasn't yet been tested in a scenario where firing it actually was
+the correct behavior (an unattended run). That's still an open validation gap, not a
+closed one.
