@@ -61,3 +61,7 @@
    where to look. Worth deciding later whether Phase 1 should require a remote as a
    precondition, or keep this graceful-degradation behavior permanently for
    local-only/pre-GitHub use.
+
+---
+
+**Chain:** genesis (first trace in this ledger; no predecessor to hash)

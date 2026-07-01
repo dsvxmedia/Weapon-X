@@ -40,3 +40,7 @@ To actually continue this task, a human must explicitly raise the cap
 (e.g. "raise the cycle cap to 3 for retry-cap-double") — but since this fixture is
 deliberately unsatisfiable by design, there's no reason to; the correct outcome for this
 specific task is to stay rejected.
+
+---
+
+**Chain:** prev=90daee809e407d763aca45bc0c5189a36e564fac766ac28d4c8785fe872660f6 (retry-cap-double-2026-06-30-1930.md)

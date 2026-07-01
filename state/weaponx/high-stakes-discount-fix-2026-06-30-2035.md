@@ -72,3 +72,7 @@ independent verdicts — evaluator B's findings could not have come from reading
 A's output, since it never had access to it; (2) the two-evaluator design's value shows up
 even without disagreement — B added real information A's framing structurally couldn't
 surface, which is a stronger result than "they agreed so it must be fine."
+
+---
+
+**Chain:** prev=391062d0947e9273c421021d5f00d43d57657c6fe7ce5f0a3297273e7689fe36 (pass-path-fix-2026-06-30-2010.md)

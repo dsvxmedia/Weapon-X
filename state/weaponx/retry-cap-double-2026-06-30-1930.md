@@ -52,3 +52,7 @@ This run exists to set up the real test: **does re-invoking `/weaponx` on this e
 reset the cycle count to zero (the bug that was fixed), or correctly carry the cycle count
 forward and refuse to silently grant a new budget (the fix)?** See the next trace file for
 the result.
+
+---
+
+**Chain:** prev=4cf6f9af92ca070be9bddf95fec2fe8d819c5fe42ea1afc590fd1dea5352724b (smoke-test-fix-add-2026-06-30-1600.md)

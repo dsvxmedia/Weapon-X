@@ -19,9 +19,19 @@ for the authoritative schema):
 - Audit/handoff packet: what was attempted, what was actually checked and by which
   gstack skill, per-claim confidence tags (`verified` vs `asserted`), what remains
   uncertain, where to look first.
+- **Chain:** a `**Chain:** prev=<sha256> (<prior-filename>)` line at the bottom, linking
+  to the real SHA-256 hash of the immediately-prior trace file (or `genesis` for the
+  first trace ever). This is enforced, not a convention — see below.
 
 These files are committed to git — they're the substrate `weaponx-drift` and
 `weaponx-calibrate` (Phase 1.5) read from, and they're what `weaponx-replay` reconstructs
-a run from. Don't hand-edit them after the fact; if a verdict was wrong, record the
-correction as a new entry (and in `benchmark/weaponx/` if it's a useful eval case) rather
-than rewriting history.
+a run from. **Don't hand-edit them after the fact.** Beyond the usual "this is a historical
+record" reasoning, editing an old trace now has a technical consequence: its hash no
+longer matches what the next trace in the chain recorded, which is exactly what makes an
+edit detectable. If a verdict was wrong, record the correction as a new entry (and in
+`benchmark/weaponx/` if it's a useful eval case) rather than rewriting history.
+
+**Verifying the chain:** process the trace files in chronological order (by the timestamp
+in each filename). For each one, `shasum -a 256 <file>` and confirm the result matches the
+`prev=` value recorded in the *next* file in the sequence. A mismatch anywhere means the
+file was altered after its successor was written.

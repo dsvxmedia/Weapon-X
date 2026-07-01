@@ -182,6 +182,21 @@ writing for someone who wants the outcome, not for someone who wants to parse a 
    cost (tokens/turns per cycle and total, wall-clock time), final verdict (`PASS` /
    `hit-retry-cap` / `hit-budget-cap` / `escalated-on-disagreement`), links to the
    resulting branch/PR or deliverable, and per-claim confidence tags.
+3. **Chain link, last, after everything else in the file is final:**
+   - Find the most recent prior trace file in `state/weaponx/` (by timestamp in the
+     filename, excluding `README.md` and `discovery-log.md`).
+   - Compute its real SHA-256: `shasum -a 256 <prior-file>`. Never fabricate this value —
+     the entire point is that it's independently recomputable and verifiable later.
+   - Append to the bottom of the new trace: `---` then
+     `**Chain:** prev=<hash> (<prior-filename>)`. If this is genuinely the first trace
+     ever (no prior file exists), write `**Chain:** genesis (first trace in this ledger;
+     no predecessor to hash)` instead.
+   - This makes the trace ledger tamper-evident: editing any past trace changes its hash,
+     which no longer matches what the next trace in the chain recorded, so the edit is
+     detectable by walking the chain and recomputing. It does not prevent editing — it
+     makes editing visible. To verify the whole chain, recompute each file's hash in
+     chronological order and confirm it matches the `prev=` value recorded in the file
+     that follows it.
 
 Use gstack `context-save` to persist the run's working context alongside the trace file
 when the task was complex enough that the trace summary alone wouldn't let a fresh session

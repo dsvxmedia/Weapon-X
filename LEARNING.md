@@ -433,3 +433,49 @@ history to make the past look different than it was — which is exactly what th
 own stated convention (append-only, don't edit old entries even in hindsight) exists to
 prevent. If the public-facing story and the internal build history read differently now,
 that's intentional: one is the presentation, the other is the record.
+
+## 2026-06-30 — Tamper-evident traces built; four other suggestions deliberately deferred
+
+External review (Perplexity, reading only the public repo) suggested seven upgrades.
+Checked each against what's actually built before doing anything, since the reviewer
+couldn't see the real implementation state, only the README:
+
+**Already built, not new work:** continuous evaluator calibration (`weaponx-calibrate`
+already does this, and correctly refuses to run on too little data), failure-to-benchmark
+capture (already automatic on REJECT and weak-PASS), risk-aware gating (already the
+`HIGH_STAKES_TRIGGERS` + dual-evaluator consensus mechanism). Worth knowing the outside
+read was behind the actual state, not that these were wrong suggestions.
+
+**Built now: tamper-evident trace chain.** Every trace in `state/weaponx/` now carries a
+`**Chain:** prev=<sha256>` line pointing to the real, computed hash of the trace before
+it, retrofitted across all 6 existing traces and made a permanent part of Move 5 going
+forward. This doesn't prevent someone from editing an old trace, it makes the edit
+detectable by breaking the chain. Picked as the one thing worth building immediately
+because it's cheap, concrete, needs no additional run history to be meaningful, and
+directly strengthens the exact claim the whole public write-up leans on: "here's the
+proof." Before this, the proof was honest but not verifiable after the fact.
+
+**Deliberately deferred, logged here so the reasoning survives even though the code
+doesn't exist yet:**
+
+- **Autonomy levels** (named tiers: observe / advise / act-with-approval / limited
+  autonomous). The reviewer's top priority, ranked last here on purpose. This is a real
+  safety-model design decision, not a quick feature, and there isn't enough run history
+  yet (six runs, mostly engineered fixtures) to know what the tiers should actually gate.
+  Building this now means guessing at boundaries with no evidence, on the one part of the
+  system that can least afford to be guessed at. Revisit once there's a real body of runs
+  to design against, not before.
+- **Drift alerts** (proactive notification when retry rate / cost / reject rate crosses a
+  threshold, on top of the existing on-demand `weaponx-drift` dashboard). Needs two things
+  that don't exist yet: enough trace history for "drift" to mean something (five or six
+  points isn't a trend, confirmed the one time `weaponx-drift` actually ran), and Phase 2
+  scheduling turned on, which is its own deliberately-parked decision. Alerting on noise
+  would be worse than not alerting.
+- **Replay UI polish.** `weaponx-replay` has never been invoked once. Polishing the
+  presentation of a feature nobody has used yet is backwards — use it first, then decide
+  if the plain markdown report is actually insufficient before building something fancier
+  on top of it.
+- **Wider risk-gating vocabulary** (explicit payment-flow / compliance-sensitive triggers
+  added to `HIGH_STAKES_TRIGGERS`, beyond protected-path / externally-visible / user-
+  flagged). Small and cheap, genuinely just not done yet — lowest-priority of the four
+  only because nothing in this project's real usage has hit that gap so far.
