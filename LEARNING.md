@@ -179,3 +179,46 @@ and LLMOps-level concerns (trace, eval, diagnose, fix-and-redeploy) were already
 by the original design. The gaps were specifically the parts of the theory that hadn't
 come up yet in a single smoke-test run — a reminder that "it worked once" and "it matches
 the theory" are different claims, and worth checking separately.
+
+## 2026-06-30 — Second gap pass: four real ones, four smaller ones
+
+Asked explicitly for another pass rather than assuming the first audit caught everything.
+It didn't. The most important finding:
+
+**The retry cap was silently bypassable.** `MAX_CYCLES` was written as a per-invocation
+limit, so a task that hit `hit-retry-cap` could just be re-run and get a fresh budget for
+free — which defeats the entire point of a hard cap being a circuit breaker. Fixed by
+making `MAX_CYCLES` cumulative *per task*, not per invocation: Move 1 now carries the
+cycle count forward from a prior capped trace, and if that carried-forward count already
+meets the cap, the loop stops immediately and requires the human to explicitly raise it
+rather than silently granting a new budget. General lesson worth remembering: any hard
+cap needs to ask "what happens if the human just runs this again" — a cap that resets on
+retry isn't actually a cap, it's a suggestion.
+
+**Model-tiering was prose, not a mechanism.** The design has said since the first pass
+that mechanical checks should run on a cheap model tier — but nothing ever told the
+orchestrator to actually set `model: "haiku"` on the dispatch call, and the actual smoke
+test confirmed it: neither sub-agent call used a model override. Fixed in Move 4 directly.
+Lesson: a design document describing an intended behavior and a skill file instructing an
+agent to perform that behavior are not the same thing, and the gap between them doesn't
+show up until you check the actual tool calls a run made, not just whether the run
+succeeded.
+
+**No concurrency safety.** Two `/weaponx` invocations running at once had no protection
+against colliding on worktree/branch names or racing on shared instance-data files. Fixed
+with a same-task-slug collision check at the start of Handoff (numeric suffix on
+collision) — deliberately lightweight, not a real locking system, since this is a
+single-operator personal tool and the actual risk is low, but "low risk" isn't "no risk."
+
+**Evaluator-b's independence relied on an instruction, not a guarantee.** It said "ignore
+evaluator-a's output if you can see it" — which implies it might be visible at all. Fixed
+by mandating parallel dispatch (both evaluators in the same message) so evaluator-b
+structurally never has evaluator-a's output in its context, full stop.
+
+**Smaller fixes, same pass:** mixed/ambiguous-domain tasks now get a named primary domain
+plus an explicit call-out of the secondary component so Verification doesn't silently drop
+half the task; `BUDGET_CEILING`'s tool-call count now explicitly includes the
+orchestrator's own tool calls, not just sub-agents'; weak-PASS runs (majority `asserted`
+claims) now get captured into `benchmark/weaponx/` tagged `weak-pass`, not just outright
+rejections; and content pulled in through a connector is now explicitly flagged as
+untrusted input, consistent with treating any fetched external content that way.

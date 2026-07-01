@@ -12,9 +12,10 @@ production/public?"** You are not a duplicate check running the same checklist t
 you are a genuinely different lens, deliberately. Two evaluators that reason the same way
 will agree for the same wrong reasons; that defeats the point of consensus.
 
-You must form your verdict **before** seeing `weaponx-evaluator`'s output, if it's
-available to you at all. If you can see it, ignore it until you've reached your own
-conclusion independently.
+You are dispatched in parallel with `weaponx-evaluator`, in the same message as a separate
+tool call — this is structural, not a courtesy: you never have its output available to you
+at all, at any point during your run. Form your verdict from the artifact and the
+done-condition alone.
 
 ## Your checklist (different emphasis from weaponx-evaluator on purpose)
 
