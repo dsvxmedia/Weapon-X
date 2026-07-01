@@ -341,3 +341,34 @@ off — that's a different category of action than building the skill, and activ
 silently would be exactly the kind of blast-radius mistake the whole safety model exists
 to avoid making casually. Documented how to activate it in the skill file; not done
 without a separate, explicit go-ahead.
+
+## 2026-06-30 — First real (non-fixture) task, and it immediately justified itself
+
+Directly called out: every run up to this point was a fixture built specifically to
+demonstrate one mechanism. Pointed at real work instead — this repo's own missing
+LICENSE, a genuine blocker to going public that had been identified in conversation but
+not acted on. Correct instinct: the tool should be used on real problems, not asked about.
+
+**It worked, and it found something no fixture would have.** The generator chose MIT
+(correct, well-reasoned) but auto-filled the copyright holder from `git config`
+(`dsvxmedia`) without treating it as a decision. Evaluator A verified internal consistency
+(matches git config, matches canonical MIT text byte-for-byte) — PASS. Evaluator B
+verified something categorically different — does this match who the user actually is —
+and it didn't match this session's known identity, so REJECT. **First real disagreement
+the loop has ever hit**, and it correctly escalated instead of averaging or picking a
+side.
+
+Turned out `dsvxmedia` was actually correct — confirmed by cross-referencing git remotes
+across 6 of the user's other repos, all consistently under that GitHub account. But the
+resolution matters as much as the finding: **an unconfirmed guess that happens to be right
+is not the same as a verified fact**, and evaluator B was correct to block on it anyway.
+This is the clearest validation yet of the whole verification-over-assumption philosophy
+this project is built on — it would have been very easy to treat B's REJECT as a false
+alarm once the value checked out, and that would have been the wrong lesson to take from
+it. The value being correct doesn't retroactively make the unconfirmed version safe to
+have shipped.
+
+Logged as a durable fact in `memory/weaponx/MEMORY.md`: ambient config (git identity,
+environment variables, etc.) is not a reliable source for anything that becomes
+permanently public — treat it as a blocking question, not a plausible default, regardless
+of how likely it is to be correct.
