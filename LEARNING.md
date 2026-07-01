@@ -79,3 +79,42 @@ failure taxonomy, the retry cap of 4, the high-stakes trigger list — these are
 starting guesses based on the research, not validated numbers. The first real runs should
 be watched closely, and this log is exactly where to record if/when any of those defaults
 turn out to be wrong.
+
+## 2026-06-30 — First real run: a one-line bug fix, and two mechanism gaps found
+
+Ran the loop end to end for the first time: a deliberately tiny, low-stakes fixture
+(`sandbox/smoke-test/`, a one-character operator bug in `add()`). Chosen deliberately
+small so any failure would be in the loop's *mechanism*, not obscured by task difficulty.
+Result: clean PASS in 1 of 4 cycles, all evaluator claims `verified` rather than merely
+`asserted`. Full trace: `state/weaponx/smoke-test-fix-add-2026-06-30-1600.md`.
+
+Two real gaps surfaced immediately, both now recorded in `memory/weaponx/MEMORY.md` so
+future runs don't rediscover them the hard way:
+
+1. **The built-in `EnterWorktree` tool doesn't work in this repo yet.** It errored "not
+   in a git repository" even though plain `git` commands worked fine in the same
+   directory — root cause is almost certainly that it defaults to branching from
+   `origin/<default-branch>`, and this repo has no `origin` configured yet (by design —
+   it isn't pushed to GitHub). Fell back to `git worktree add` directly. This means Move
+   2 (Handoff) as written in `SKILL.md` is *not yet accurate* about how isolation
+   actually happens pre-GitHub — it should say so explicitly rather than presenting the
+   tool call as though it always works. Left as a known gap rather than fixed immediately,
+   since fixing it well probably means deciding whether Phase 1 should require a remote as
+   a precondition at all, which is a real design question, not a typo.
+
+2. **`gstack ship`'s PR step assumes a remote exists.** Same root cause. Didn't attempt
+   to force it — instead, Persistence committed to a feature branch and left it unmerged,
+   which is arguably the *correct* behavior for a repo that isn't on GitHub yet, not a
+   workaround. Worth deciding explicitly later: is "commit to an unmerged branch, no PR"
+   permanent graceful-degradation behavior for local-only use, or should Phase 1 assume a
+   remote and treat its absence as a setup error? Left open on purpose — recording the
+   question is more valuable right now than guessing at the answer from one data point.
+
+**Lesson for next time:** both gaps were about the *scaffolding around* the loop (git
+remote state), not the loop's actual reasoning — the five-move sequence, the
+generator/evaluator separation, and the confidence tagging all worked exactly as designed
+on the first try. That's a mild update against the pre-run worry that the failure
+taxonomy or retry cap would need immediate rework; it's a point *for* the worry that
+"what does Phase 1 assume about repo/remote state" wasn't specified clearly enough in the
+original design and should be nailed down before the second run, ideally on a task where
+it isn't a low-stakes local fixture.
