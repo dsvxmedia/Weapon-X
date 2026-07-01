@@ -60,7 +60,12 @@ weighs in before a PASS is allowed to stand.
 
 ## Safety model
 
-1. **Never auto-merge, auto-deploy, or auto-publish.** Always a human decision.
+1. **Never auto-merge, auto-deploy, or auto-publish.** Always a human decision. On this
+   repo's `main` branch, that's not just an instruction: GitHub branch protection requires
+   a PR, blocks force-pushes and deletions, and is enforced even for the repo owner. A
+   local pre-push hook mirrors the same rule before a push even reaches GitHub. Both were
+   tested by attempting a direct push and confirming it gets rejected, not just configured
+   and assumed to work.
 2. **Never auto-promotes its own autonomy.** No amount of clean runs changes its
    permissions on its own — that's a human decision, made outside the loop.
 3. **Suggests, never applies, changes to its own knowledge.** If the drift layer

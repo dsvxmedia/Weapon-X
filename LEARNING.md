@@ -479,11 +479,39 @@ doesn't exist yet:**
   added to `HIGH_STAKES_TRIGGERS`, beyond protected-path / externally-visible / user-
   flagged). Small and cheap, genuinely just not done yet — lowest-priority of the four
   only because nothing in this project's real usage has hit that gap so far.
-## 2026-06-30 — Agentjacking check added; positioning re-grounded in current research
+## 2026-06-30 — "Never merge" became enforced, not just instructed
 
-(This entry assumes the "'Never merge' became enforced" entry from the
-`weaponx/enforce-merge-block` branch/PR #1 lands first — referenced below as already
-built, since it was, chronologically, even though that PR may still be pending merge.)
+A second external review (also via Perplexity, a longer and more grandiose one this
+round) correctly named the real gap under all the ambition: the safety rules in this
+project have always been prose the orchestrator is trusted to follow, not something
+technically incapable of being violated. Everything else in that review, autonomy
+escrow, trust portability across organizations, "machine governance infrastructure for
+society", was set aside as premature framing for a six-run project (see below) — but
+this one point was correct and worth acting on immediately.
+
+**Built:** GitHub branch protection on `main` (`enforce_admins=true`, required PRs, no
+force-push, no branch deletion), plus a local `.githooks/pre-push` hook that blocks a
+direct push before it even reaches the network. Both were tested, not just configured
+and trusted: a real commit, a real `git push origin main`, a real rejection from each
+layer independently. GitHub's `GH006: Protected branch update failed` for the remote
+layer; the hook's own message for the local layer. This is the difference between "the
+agent promises not to merge" and "the agent's own tool calls cannot merge, regardless of
+what it decides" — the second one doesn't depend on the orchestrator's judgment holding
+up every single time.
+
+**Why this, and not the rest of that review's list, right now:** it's the one item that
+closes a real, already-identified gap (the difference between documented and enforced
+safety) rather than opening a new, much bigger and unproven ambition. Cheap, testable,
+done in under an hour. Everything else in that conversation, autonomy tiers, trust
+scores portable across orgs, healthcare/compliance/public-sector applications, was
+explicitly declined as a direction to build toward right now: interesting in the
+abstract, but claiming any of it at this project's actual stage (six runs, one operator,
+a few days old) would be a credibility problem, not a credibility asset, for the exact
+audience (engineers) this project is trying to earn trust with. Recorded here so the
+reasoning survives if the ambition resurfaces later: the right time to build toward it
+is after there's a real body of evidence, not before.
+
+## 2026-06-30 — Agentjacking check added; positioning re-grounded in current research
 
 Before deciding what "GOD tier" should mean, did real research instead of taking the
 ambition at face value: current public statements from Boris Cherny and Andrej Karpathy,
