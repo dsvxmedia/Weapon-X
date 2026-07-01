@@ -38,9 +38,8 @@ behaves.
 - [Claude Code](https://claude.com/claude-code)
 - A skill suite covering test/build verification, code review, and PR mechanics — the
   orchestrator dispatches to it for the actual QA, review, and shipping work rather than
-  reimplementing that from scratch. Built and tested against
-  [`gstack`](https://gstack.dev); any comparable suite should work with light edits to
-  `.claude/skills/weaponx/SKILL.md`.
+  reimplementing that from scratch. See `.claude/skills/weaponx/SKILL.md` for the exact
+  skill names it currently expects, and swap in your own equivalents there if needed.
 
 ## Usage
 
