@@ -29,6 +29,9 @@ memory/weaponx/MEMORY.md             durable cross-task facts (instance data, ke
 state/weaponx/                       one structured trace file per run, plus discovery-log.md (instance data)
 benchmark/weaponx/                   eval cases captured from real rejections (instance data)
 docs/specs/                          design specs (this is where the "why" lives)
+docs/examples/                       curated write-ups of real runs, kept after the raw
+                                      branch is deleted — see LEARNING.md's 2026-06-30
+                                      cleanup entry for why some runs get this and most don't
 LEARNING.md                          running process/decision log — read before changing
                                       anything about how the loop itself works
 ```

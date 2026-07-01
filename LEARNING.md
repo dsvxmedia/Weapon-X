@@ -372,3 +372,36 @@ Logged as a durable fact in `memory/weaponx/MEMORY.md`: ambient config (git iden
 environment variables, etc.) is not a reliable source for anything that becomes
 permanently public — treat it as a blocking question, not a plausible default, regardless
 of how likely it is to be correct.
+
+## 2026-06-30 — Branch cleanup, checked against a second opinion first
+
+Before merging/cleaning up, ran the plan itself past `gstack`'s `plan-eng-review` for a
+second opinion rather than just executing the first plan proposed. Worth doing — it
+agreed with most of the plan but caught one real thing worth changing.
+
+**Executed:**
+- Merged `weaponx/add-license` into `main` (real, needed, double-verified — but caught
+  along the way that the LICENSE/README changes had been *verified* by both evaluators
+  but never actually *committed* in the worktree; committed before merging).
+- Deleted `weaponx/smoke-test-fix` and `weaponx/pass-path-fix` outright — both were
+  redundant demonstrations of the same thing (single-evaluator PASS on a fixed bug),
+  and their record already lives in `state/weaponx/` traces.
+- **Did not delete `weaponx/high-stakes-discount-fix` the same way**, per the second
+  opinion's pushback: it's the one run that demonstrated something the other two didn't
+  — two independent evaluators reaching agreement while still surfacing genuinely
+  different information, which is the actual argument for running two evaluators at all,
+  not just the disagreement-escalation path. Wrote it up as
+  `docs/examples/high-stakes-dual-evaluator-consensus.md` before deleting the branch, so
+  the substance survives even though the raw fixture code doesn't need to.
+
+**General lesson, worth keeping:** "these are all the same kind of thing, clean them up
+uniformly" was the wrong first instinct. Branches that look interchangeable from a
+distance (all sandbox pressure-test fixtures) can differ in what they actually proved —
+worth checking case by case before batch-deleting, rather than applying one rule to
+everything that superficially matches a category.
+
+Since nothing had ever been pushed to a remote, none of this touched any public history —
+worth noting for next time this comes up: local branch cleanup pre-GitHub is close to
+risk-free (git retains deleted commits via reflog for weeks regardless), which is part of
+why the safe default is to prefer deleting over indefinitely accumulating exploratory
+branches, rather than treating "keep everything just in case" as the safer choice.

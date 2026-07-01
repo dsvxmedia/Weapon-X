@@ -73,6 +73,7 @@ memory/weaponx/MEMORY.md             durable cross-task facts the loop has learn
 state/weaponx/                       one structured trace file per run
 benchmark/weaponx/                   real-failure eval cases, captured automatically
 docs/specs/                          design specs — the "why" behind the architecture
+docs/examples/                       curated write-ups of real runs worth reading in full
 CLAUDE.md                            project orientation for any Claude Code session here
 LEARNING.md                          running decision/process log
 ```
