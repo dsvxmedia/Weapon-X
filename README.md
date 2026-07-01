@@ -96,5 +96,6 @@ scheduling needs a remote, which this repo doesn't have yet). Not yet built, by 
 
 ## License
 
-Not yet decided — currently private. Intended to be open-sourced once Phase 1 has proven
-itself against real tasks.
+[MIT](LICENSE). It's the most permissive, widely-recognized license, which best serves the
+goal of letting anyone freely fork, reuse, and adopt this engine with no copyleft strings —
+a good fit for a small config/prompt repo with no application code or compiled dependencies.
