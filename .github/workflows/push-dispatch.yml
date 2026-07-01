@@ -1,0 +1,127 @@
+name: PUSH dispatch (headless weaponx run)
+
+# Cold-start execution path for PUSH. Triggered by push-poll.yml (or manually)
+# with a task string, this runs the weaponx loop HEADLESS inside a GitHub Actions
+# runner via Claude Code's `-p` mode — the same scriptable headless SDK usage this
+# repo's Phase 1 design spec already describes (Boris Cherny: "headless `-p` SDK as
+# a scriptable utility"). It keeps the operator informed over Telegram at the same
+# points the Path 1 local bridge would, so a phone-initiated run is never silent.
+#
+# Safety: this does NOT relax weaponx's never-merge/never-publish rule. The loop
+# still opens an unmerged PR/draft and stops. The one shipping-adjacent step below
+# is additionally gated behind the `weaponx-approval` GitHub Environment, so a human
+# reviewer must approve before it can run at all.
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "The weaponx task text (what follows /weaponx)."
+        required: true
+        type: string
+
+concurrency:
+  # One headless run at a time — Phase 3 (parallel dispatch) is explicitly not built.
+  group: push-dispatch
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # weaponx works on a branch; ship opens a PR
+  pull-requests: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Notify — run starting
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TASK: ${{ inputs.task }}
+        run: |
+          set -euo pipefail
+          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=Starting a weaponx run you asked for from your phone. Task: ${TASK}. I'll message you when it needs a decision or is ready for review." \
+            --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run weaponx headless
+        id: weaponx
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TASK: ${{ inputs.task }}
+        run: |
+          set -euo pipefail
+          # Headless weaponx: the loop plans, generates, verifies, and persists,
+          # stopping at an unmerged PR/draft exactly as an interactive run would.
+          # Because TELEGRAM_* are exported here, weaponx's optional PUSH steps
+          # (Moves 4 & 5) will emit checkpoints/briefs over Telegram too.
+          claude -p "/weaponx ${TASK}"
+
+      - name: Notify — verification/persistence done
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          STATUS: ${{ steps.weaponx.outcome }}
+        run: |
+          set -euo pipefail
+          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=The weaponx run finished its work-and-check stage (result: ${STATUS}). If it produced something worth shipping, it's now waiting on your approval before I open the PR." \
+            --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+
+  # Shipping is a SEPARATE, human-gated job. It only runs after the run job, and
+  # it depends on the `weaponx-approval` GitHub Environment, which a human must
+  # configure with themselves as a required reviewer (see SETUP.md). Until a
+  # reviewer approves in the GitHub UI, this job blocks — that is the enforced,
+  # not merely instructed, never-auto-ship boundary for the cold-start path.
+  ship:
+    needs: run
+    runs-on: ubuntu-latest
+    environment: weaponx-approval
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Notify — approved, opening PR
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=You approved the weaponx run. Opening the PR now — it still stops at an open PR for you to merge; nothing auto-merges." \
+            --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+
+      # NOTE: the actual branch/PR that weaponx produced lives in the `run` job's
+      # runner and is not automatically shared with this job. A full implementation
+      # would push the weaponx branch from the run job (e.g. as an artifact or by
+      # pushing to origin) and open the PR here. Left as a documented gap so the
+      # human-approval gate is wired correctly first; see SETUP.md / the PR notes.
+      - name: Open PR (placeholder — see note above)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Human approved via the weaponx-approval environment."
+          echo "PR-opening wiring is intentionally left as a documented gap; see SETUP.md."

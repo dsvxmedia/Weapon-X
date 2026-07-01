@@ -1,0 +1,126 @@
+name: PUSH poll (cold-start command intake)
+
+# Cold-start path for PUSH: lets the operator kick off a brand-new weaponx task
+# from their phone when NO local session is running. It polls Telegram for new
+# "/weaponx <task>" messages from the single allow-listed chat id, and when it
+# finds one, triggers push-dispatch.yml to actually run the loop.
+#
+# HONEST CAVEAT: GitHub's `schedule:` trigger is best-effort, not exact-time. Cron
+# here is "at most every ~5 minutes"; under load GitHub can delay or occasionally
+# skip runs, and scheduled workflows on the default branch can be disabled after
+# ~60 days of repo inactivity. That latency/unreliability is an ACCEPTED tradeoff
+# for a cold-start convenience path — it is not the primary way to run weaponx, and
+# it is not a bug to be fixed here. When a local session is running, use the Path 1
+# long-poll bridge instead, which is immediate.
+
+on:
+  schedule:
+    # Every 5 minutes (best-effort — see caveat above).
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}   # allow manual "poll now" for testing
+
+# Never run two pollers at once — overlapping polls could double-dispatch the same
+# command because Telegram's getUpdates offset is advanced per-run, not shared.
+concurrency:
+  group: push-poll
+  cancel-in-progress: false
+
+permissions:
+  actions: write   # needed to trigger push-dispatch.yml via the API
+  contents: read
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for the offset cache key only)
+        uses: actions/checkout@v4
+
+      # Persist the last-processed Telegram update_id between runs so we don't
+      # re-dispatch a command we already saw. Cache is best-effort; if it misses,
+      # we fall back to only processing the newest single command (see below).
+      - name: Restore last-seen update offset
+        id: offset-cache
+        uses: actions/cache@v4
+        with:
+          path: .push-offset
+          key: push-telegram-offset-${{ github.run_id }}
+          restore-keys: |
+            push-telegram-offset-
+
+      - name: Poll Telegram for new /weaponx commands
+        id: poll
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ]; then
+            echo "PUSH secrets not set — nothing to poll. (This workflow is inert until configured.)"
+            echo "dispatch=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OFFSET=0
+          if [ -f .push-offset ]; then
+            OFFSET="$(cat .push-offset)"
+          fi
+
+          RESP="$(curl -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates" \
+            --data-urlencode "offset=${OFFSET}" \
+            --data-urlencode "timeout=0" \
+            --data-urlencode 'allowed_updates=["message"]')"
+
+          if [ "$(echo "$RESP" | jq -r '.ok')" != "true" ]; then
+            echo "Telegram getUpdates error: $(echo "$RESP" | jq -r '.description // "unknown"')" >&2
+            echo "dispatch=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Advance the offset past everything we fetched, so the next run starts fresh.
+          LAST="$(echo "$RESP" | jq -r '.result | (map(.update_id) | max) // empty')"
+          if [ -n "$LAST" ]; then
+            echo "$(( LAST + 1 ))" > .push-offset
+          fi
+
+          # Find the newest message from the allow-listed chat that starts with
+          # "/weaponx ", and strip the command prefix to get the raw task text.
+          TASK="$(echo "$RESP" | jq -r \
+            --arg chat "${TELEGRAM_CHAT_ID}" '
+            [ .result[]
+              | select(.message.chat.id|tostring == $chat)
+              | select(.message.text != null)
+              | select(.message.text | startswith("/weaponx "))
+            ] | last | .message.text // empty
+          ')"
+
+          if [ -z "$TASK" ]; then
+            echo "No new /weaponx command from the allow-listed chat this poll."
+            echo "dispatch=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Strip the "/weaponx " prefix.
+          TASK_TEXT="${TASK#/weaponx }"
+          echo "Found command; will dispatch task: ${TASK_TEXT}"
+
+          # Pass the task text to the next step via output (multiline-safe).
+          {
+            echo "dispatch=true"
+            echo "task<<PUSH_EOF"
+            echo "${TASK_TEXT}"
+            echo "PUSH_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Trigger dispatch workflow
+        if: steps.poll.outputs.dispatch == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh workflow run push-dispatch.yml \
+            --ref "${{ github.ref_name }}" \
+            -f task="${{ steps.poll.outputs.task }}"
+          echo "Dispatched push-dispatch.yml with the task."
