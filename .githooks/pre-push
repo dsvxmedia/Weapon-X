@@ -1,0 +1,28 @@
+#!/bin/sh
+# Weapon X — local enforcement layer, second of two.
+#
+# GitHub branch protection on `main` (required PRs, enforce_admins=true) is the
+# real enforcement — this hook cannot be more authoritative than that, since
+# anyone can delete or bypass a local hook. Its purpose is narrower: catch a
+# direct push to main *before* it round-trips to GitHub and gets rejected
+# there, so the failure is instant and local instead of a network error.
+#
+# Install: git config core.hooksPath .githooks
+# (run once per clone; this repo's .git/hooks is not itself version-controlled,
+# which is why this lives in a tracked directory instead.)
+
+protected_branch='main'
+push_command=$(ps -ocommand= -p $PPID 2>/dev/null)
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  remote_branch=$(echo "$remote_ref" | sed 's|refs/heads/||')
+  if [ "$remote_branch" = "$protected_branch" ]; then
+    echo "BLOCKED: direct push to '$protected_branch' rejected by local pre-push hook." >&2
+    echo "This mirrors GitHub's branch protection on this repo (required PRs," >&2
+    echo "enforced for admins too) — it is not a suggestion, both layers agree." >&2
+    echo "Open a PR instead: gh pr create --base main" >&2
+    exit 1
+  fi
+done
+
+exit 0

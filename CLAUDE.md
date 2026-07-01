@@ -44,6 +44,11 @@ would copy.
 ## Hard rules (do not relax these without updating LEARNING.md to explain why)
 
 1. Never auto-merge, auto-deploy, or auto-publish. Open PRs/drafts; a human approves.
+   On `main`, this is enforced, not just instructed: GitHub branch protection
+   (`enforce_admins=true`, required PRs, no force-push/deletion) plus a local
+   `.githooks/pre-push` hook (`git config core.hooksPath .githooks` to install it in a
+   fresh clone) both reject a direct push. Confirmed by testing an actual push, not
+   assumed from configuration.
 2. Never let the loop promote its own autonomy. Trust-level changes are a human decision,
    made outside the loop.
 3. The orchestrator may *suggest* a `CLAUDE.md`/skill/memory edit (via `weaponx-drift`);

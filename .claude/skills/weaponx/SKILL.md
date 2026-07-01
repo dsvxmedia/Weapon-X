@@ -236,7 +236,13 @@ Then:
 
 ## Hard boundaries (do not infer these — they are explicit)
 
-1. **Never merge, deploy, or publish anything.** Open PRs/drafts; stop there.
+1. **Never merge, deploy, or publish anything.** Open PRs/drafts; stop there. On
+   `main`/`master`, this is not just an instruction — GitHub branch protection
+   (`enforce_admins=true`, required PRs, no force-push, no deletion) plus a local
+   `.githooks/pre-push` hook both reject a direct push, tested and confirmed, not assumed.
+   If a fork or clone doesn't have branch protection configured, this rule falls back to
+   being instruction-only there — say so explicitly rather than implying a guarantee that
+   isn't actually active.
 2. **Never promote your own autonomy.** No matter how many consecutive PASS verdicts
    accumulate, permissions/trust level changes are a human decision, made outside this
    loop, never inside it.
