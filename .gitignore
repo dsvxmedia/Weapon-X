@@ -7,3 +7,6 @@ __pycache__/
 *.pyc
 .worktrees/
 .gstack/
+
+# PUSH (weaponx-push) runtime state — pending decision markers, not committed
+.claude/skills/weaponx-push/.pending/

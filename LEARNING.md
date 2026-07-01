@@ -551,3 +551,43 @@ agentjacking check, and the ambition itself has never survived contact with "wha
 actual evidence support right now." That's worth trusting as a process, not just a
 one-off: keep pressure-testing the vision against research and real run history rather
 than either dismissing external ideas wholesale or building toward all of them at once.
+
+---
+
+## 2026-07-01 — PUSH: an optional Telegram human-in-the-loop layer, kept out of the core
+
+Added PUSH (`.claude/skills/weaponx-push/`): plain-English checkpoints while a run is in
+progress, and decision briefs at human-gates (retry-cap, evaluator disagreement, PR ready)
+that the operator can answer from their phone to resume the loop. Two delivery paths — a
+local long-poll bridge (`bin/push-bridge.sh`, curl + jq only) for when a session is running
+on the operator's machine, and a GitHub Actions cold-start path (`push-poll.yml` +
+`push-dispatch.yml`) for kicking off a task from a phone with no local session.
+
+**Key decision: PUSH is gated entirely behind config, never a hard dependency.** The engine
+must not gain a standing dependency on an external service. So PUSH is off unless
+`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are both set; when unset, the bridge exits with
+a "skipping" status and the loop behaves exactly as before. The wiring into Moves 4 and 5 is
+strictly additive — the two new steps are clearly marked "optional, only if configured" and
+run *in addition to* the existing `PushNotification`/trace behavior, never instead of it.
+This is why the change touches how the loop *behaves* (new optional notifications) but does
+not weaken any existing guarantee — worth logging here rather than only in git history.
+
+**Key decision: PUSH lives outside the portable core, and is itself split.** The bridge
+script + docs are reasonably portable (a fork can reuse them with the two env vars), but the
+GitHub Actions workflows are specific to this repo's CI and its `weaponx-approval`
+environment, so they're this instance's wiring, not reusable engine. CLAUDE.md's
+engine-vs-instance paragraph now says exactly this.
+
+**Never-auto-ship held on the cloud path too.** `push-dispatch.yml`'s ship step depends on
+the `weaponx-approval` GitHub Environment (human required-reviewer), so the cold-start path
+still can't ship without explicit human approval — the same boundary as the local path, kept
+enforced rather than merely instructed. Deliberate known gap: the cross-job branch/PR
+handoff in that ship step is a documented placeholder (the human-approval gate was wired
+first, on purpose); see the note in the workflow and SETUP.md.
+
+**Corrected a now-stale precondition.** `weaponx-discover`'s SKILL.md (and the main
+orchestrator's Handoff/Persistence) previously assumed there was no `origin` remote. There
+now is one (`dsvxmedia/Weapon-X`), so cloud scheduling is technically unblocked — updated the
+discover skill to say so while staying honest that no discover-specific scheduled workflow is
+turned on by default. (The main orchestrator's remote-conditional logic already branches on
+whether a remote exists at runtime, so it stays correct as written.)

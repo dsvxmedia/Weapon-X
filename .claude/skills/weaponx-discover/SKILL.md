@@ -34,12 +34,11 @@ Read, in order:
    real work; discovering and "fixing" them would be a Nodding-Loop-adjacent mistake).
 3. **Open items explicitly flagged in `memory/weaponx/MEMORY.md` or `LEARNING.md`** —
    e.g. a logged finding that says "not fixed yet" or "worth revisiting."
-4. **This repo has no CI and no issue tracker yet** (no `origin` remote configured — same
-   condition Handoff/Persistence already check for). Once a remote and CI/issues exist,
-   extend this list to include failed CI runs and open issues, the way the Loop
-   Engineering paper's reference triage skill does. Don't simulate or guess at issues that
-   don't exist; report plainly that these sources are unavailable rather than silently
-   skipping them.
+4. **This repo now has an `origin` remote** (`dsvxmedia/Weapon-X`), but no issue tracker or
+   CI that this skill reads from yet. Once CI/issues exist, extend this list to include
+   failed CI runs and open issues, the way the Loop Engineering paper's reference triage
+   skill does. Don't simulate or guess at issues that don't exist; report plainly that
+   these sources are unavailable rather than silently skipping them.
 5. **If a connector is configured** (Jira, Linear, GitHub Issues via MCP, etc.), use it —
    same principle as Move 1 of the main orchestrator: borrow what's connected, don't build
    new integration code here.
@@ -89,14 +88,17 @@ logic.
 This skill can be invoked two ways, and this repo currently only supports one of them:
 
 - **Local, on-demand cadence** — `/loop` (session-scoped, requires the machine to stay on,
-  recurring tasks expire after 7 days). This is what's available right now, since there's
-  no `origin` remote and therefore no cloud/CI scheduling target yet. To activate:
-  `/loop <interval> weaponx-discover` (e.g. `/loop 1h weaponx-discover`), or `/loop
-  weaponx-discover` to let it self-pace.
+  recurring tasks expire after 7 days). To activate: `/loop <interval> weaponx-discover`
+  (e.g. `/loop 1h weaponx-discover`), or `/loop weaponx-discover` to let it self-pace.
 - **Cloud scheduling** (GitHub Actions schedule trigger, or a Cloud Routine) — the more
-  correct long-term answer, since it doesn't need this machine to stay on. **Not available
-  yet** — needs a remote first, same precondition already documented for `ship`'s PR flow
-  in the main orchestrator. Revisit once a remote exists.
+  correct long-term answer, since it doesn't need this machine to stay on. This is now
+  **technically unblocked**: the repo has a real `origin` remote (`dsvxmedia/Weapon-X`), so
+  a GitHub Actions `schedule:` trigger is possible — the PUSH add-on
+  (`.claude/skills/weaponx-push/`) already ships exactly this kind of scheduled poller for
+  its cold-start path. What's *not* done is a discover-specific scheduled workflow: none is
+  turned on by default, and wiring one (a `schedule:`-triggered job that invokes
+  `weaponx-discover` headless) is deliberately left as an explicit opt-in, not something
+  this skill enables on its own.
 
 Activating either scheduling mode is a deliberate decision with an ongoing cost (it starts
 autonomous behavior that keeps running until turned off) — this skill file documents how,
