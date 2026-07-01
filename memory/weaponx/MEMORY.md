@@ -22,3 +22,7 @@ the bottom, optionally tagged with the task/date it came from.
 - `gstack ship`'s PR-creation step needs a remote. Without one, Persistence should commit
   to a feature branch and leave it unmerged rather than attempting a PR — this is expected
   Phase 1 behavior pre-GitHub, not a failure. (from: smoke-test-fix-add, 2026-06-30)
+- When a task turns out to be unsatisfiable/contradictory as specified (not a code defect,
+  the spec itself conflicts), the evaluator should use `other-with-detail`, not force-fit
+  a category like `wrong-tool-choice`. A live run picked the wrong label for exactly this
+  case. (from: retry-cap-double, 2026-06-30)
