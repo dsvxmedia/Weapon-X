@@ -13,14 +13,21 @@ allowed to pass.
 
 ## Why
 
-Most "agent loops" are a generator that grades its own homework — which means they tend
-to praise mediocre output, since the context it reasons in is already full of the reasons
-it made the choices it made. Weapon X separates the two: a generator does the work, a
-completely independent evaluator (different agent, different context, no visibility into
-the generator's reasoning) checks it by actually running tests/builds/QA rather than just
-reading the result, and a second evaluator weighs in on anything high-stakes before it's
-allowed to PASS. Nothing merges or publishes without a human. Full rationale and research
-basis: [`docs/specs/2026-06-30-weaponx-phase1-design.md`](docs/specs/2026-06-30-weaponx-phase1-design.md).
+Generation stopped being the bottleneck a while ago. Verification is: one 2026 analysis
+of AI-assisted development found code churn up 861%, the incident-to-PR ratio up 242.7%,
+and median review time up 441.5% — reviewers couldn't keep pace, so code started merging
+unread, and that became normal. That's the actual problem, not "can an agent write code."
+
+Most "agent loops" make it worse by having the same agent that wrote the code decide if
+the code is good — which means they tend to praise mediocre output, since the context it
+reasons in is already full of the reasons it made the choices it made. Weapon X separates
+the two: a generator does the work, a completely independent evaluator (different agent,
+different context, no visibility into the generator's reasoning) checks it by actually
+running tests/builds/QA rather than just reading the result, and a second evaluator weighs
+in on anything high-stakes before it's allowed to PASS. Nothing merges or publishes
+without a human — and on this repo, that's enforced by GitHub branch protection and a
+local pre-push hook, not just an instruction. Full rationale and research basis:
+[`docs/specs/2026-06-30-weaponx-phase1-design.md`](docs/specs/2026-06-30-weaponx-phase1-design.md).
 
 See [`LEARNING.md`](LEARNING.md) for the running log of *why* it's built this way and
 what's been learned from actually using it — read that before changing how the loop
@@ -31,9 +38,8 @@ behaves.
 - [Claude Code](https://claude.com/claude-code)
 - A skill suite covering test/build verification, code review, and PR mechanics — the
   orchestrator dispatches to it for the actual QA, review, and shipping work rather than
-  reimplementing that from scratch. Built and tested against
-  [`gstack`](https://gstack.dev); any comparable suite should work with light edits to
-  `.claude/skills/weaponx/SKILL.md`.
+  reimplementing that from scratch. See `.claude/skills/weaponx/SKILL.md` for the exact
+  skill names it currently expects, and swap in your own equivalents there if needed.
 
 ## Usage
 

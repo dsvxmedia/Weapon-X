@@ -479,7 +479,6 @@ doesn't exist yet:**
   added to `HIGH_STAKES_TRIGGERS`, beyond protected-path / externally-visible / user-
   flagged). Small and cheap, genuinely just not done yet — lowest-priority of the four
   only because nothing in this project's real usage has hit that gap so far.
-
 ## 2026-06-30 — "Never merge" became enforced, not just instructed
 
 A second external review (also via Perplexity, a longer and more grandiose one this
@@ -511,3 +510,44 @@ a few days old) would be a credibility problem, not a credibility asset, for the
 audience (engineers) this project is trying to earn trust with. Recorded here so the
 reasoning survives if the ambition resurfaces later: the right time to build toward it
 is after there's a real body of evidence, not before.
+
+## 2026-06-30 — Agentjacking check added; positioning re-grounded in current research
+
+Before deciding what "GOD tier" should mean, did real research instead of taking the
+ambition at face value: current public statements from Boris Cherny and Andrej Karpathy,
+and current Hacker News / industry discussion on AI coding agents.
+
+**Correction that changed the plan:** Karpathy's actual 2026 position is cautious, not
+accelerationist — he calls current agents "brittle," says they can't really plan or
+remember, and frames "agentic engineering" as a human discipline (spec design, diff
+review, eval design) rather than a case for removing humans faster. "Pushing past" him
+toward more autonomy would mean pushing past his own stated skepticism, not extending his
+vision. Re-grounded the goal around making his actual discipline easier to do well, not
+around outrunning it.
+
+**Validation that reshaped the public copy:** the real, current, well-documented 2026
+complaint about coding agents is that verification capacity, not generation speed, is the
+bottleneck — one analysis found code churn up 861%, the incident-to-PR ratio up 242.7%,
+and review time up 441.5%, with code now merging unread because reviewers can't keep pace.
+That is exactly the problem this project's generator/evaluator split targets. Updated
+`README.md`'s "Why" section and both the LinkedIn post and technical blog post in the
+asset folder to lead with this, sourced, instead of the more abstract "agents grade their
+own homework" framing alone.
+
+**Built: an agentjacking check.** A real, named, current attack — instructions hidden in
+data (a fetched page, a file, a dependency) get followed as if they were the task — with
+no dedicated coverage before this. Added to `weaponx-evaluator.md` as an explicit check
+run whenever a task touches a connector or third-party content, and added
+`injected-instruction-compliance` as a new failure-taxonomy value, synced across
+`weaponx/SKILL.md`'s taxonomy list and the connectors note. Chosen over the more
+speculative items on every "GOD tier" list so far specifically because it's grounded in a
+documented, current threat, not a projection of what governance-scale autonomy might
+someday need.
+
+**What this round confirms about the overall pattern:** every one of these external
+"make it GOD tier" conversations has produced one real, buildable thing once separated
+from the ambition around it, tamper-evident traces, enforced merge-blocking, now the
+agentjacking check, and the ambition itself has never survived contact with "what does the
+actual evidence support right now." That's worth trusting as a process, not just a
+one-off: keep pressure-testing the vision against research and real run history rather
+than either dismissing external ideas wholesale or building toward all of them at once.
