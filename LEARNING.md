@@ -300,3 +300,44 @@ mechanism that still hasn't been tested in the scenario it's actually for is the
 unattended notification path — can't test that honestly from inside an active
 conversation, and it stays an open gap until there's a genuinely unattended run to
 observe it on.
+
+## 2026-06-30 — Phase 2 built: weaponx-discover
+
+Moved to Phase 2 per direction, after (not instead of) finishing the Phase 1 pressure
+testing above — deliberately in that order, consistent with the phased-rollout principle
+this project keeps returning to: prove the loop before automating what feeds it.
+
+**Design decision: discovery dispatches through the unmodified Phase 1 loop, not a
+shortcut version of it.** Every candidate `weaponx-discover` finds gets handed to the
+exact same `weaponx` skill a human would invoke by hand — same worktree isolation, same
+generator/evaluator split, same retry cap, same never-merge boundary. Phase 2 only
+automates *finding* work, not *shipping* it; the safety floor doesn't move. This was the
+one design question worth deciding deliberately rather than defaulting: it would have been
+easy to build a leaner, faster "just fix it" path for auto-discovered work on the theory
+that it's lower-stakes since a human didn't ask for it specifically — that's backwards.
+Auto-discovered work has *less* human context behind it than a hand-typed task, if
+anything it deserves the same scrutiny, not less.
+
+**Design decision: `MAX_CANDIDATES_PER_RUN` (default 3) is the Phase 2 equivalent of
+`MAX_CYCLES`.** Without a hard cap on how many discovered candidates get dispatched in one
+run, a discovery pass that finds a lot of plausible-looking work could fan out into an
+expensive, unbounded batch — the token-blowout failure mode, one level up from the
+per-task cap. Excess candidates get logged and deferred, not dropped.
+
+**Design decision: excluded `sandbox/` from discovery sources explicitly.** This repo's
+own pressure-test fixtures (the deliberately-broken `double()`, the contradictory tests)
+would otherwise look exactly like real bugs to a naive commit/TODO scan. Discovering and
+"fixing" them would be absurd — a good concrete example of why "find broken-looking code"
+isn't the same as "find real work," and worth remembering if discovery sources ever expand.
+
+**What's not done: scheduling is not activated.** The skill exists and runs on demand, but
+nothing is invoking it on a cadence. Two reasons, both deliberate: (1) this repo has no
+`origin` remote yet, so cloud scheduling (the more correct long-term answer, since it
+doesn't need this machine to stay on) isn't available — same precondition already
+documented for `ship`'s PR flow; local `/loop` is the only option right now, and it
+requires the machine to stay on and expires after 7 days. (2) Turning on a recurring
+trigger starts genuinely autonomous behavior that keeps running until someone turns it
+off — that's a different category of action than building the skill, and activating it
+silently would be exactly the kind of blast-radius mistake the whole safety model exists
+to avoid making casually. Documented how to activate it in the skill file; not done
+without a separate, explicit go-ahead.

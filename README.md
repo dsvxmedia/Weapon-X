@@ -63,6 +63,7 @@ weighs in before a PASS is allowed to stand.
 
 ```
 .claude/skills/weaponx/              the orchestrator — start here to understand the loop
+.claude/skills/weaponx-discover/     Phase 2: finds work on its own, dispatches through weaponx
 .claude/skills/weaponx-calibrate/    Phase 1.5: is the evaluator still trustworthy?
 .claude/skills/weaponx-drift/        Phase 1.5: cross-run cost/failure trend dashboard
 .claude/skills/weaponx-replay/       Phase 1.5: reconstruct one run from its trace
@@ -82,11 +83,14 @@ project's own accumulated instance data, not part of the engine.
 
 ## Status
 
-**Phase 1** (on-demand `/weaponx <task>`) and **Phase 1.5** (trust/drift tooling, mostly
-inert until enough run history accumulates) are built. Not yet built, by design — see the
-design spec for why each is deferred:
+**Phase 1** (on-demand `/weaponx <task>`), **Phase 1.5** (trust/drift tooling, mostly inert
+until enough run history accumulates), and **Phase 2** (`weaponx-discover` — scans commits/
+TODOs/flagged items, dispatches a capped number of candidates through the unmodified
+Phase 1 loop) are built. **Phase 2's scheduling is not yet turned on** — the skill exists
+and can be run on demand, but nothing is invoking it on a recurring cadence yet; see
+`.claude/skills/weaponx-discover/SKILL.md` for how to activate it with `/loop` (cloud
+scheduling needs a remote, which this repo doesn't have yet). Not yet built, by design:
 
-- **Phase 2:** scheduled discovery (a recurring trigger that finds work on its own).
 - **Phase 3:** parallel dispatch across multiple tasks at once.
 - **Autonomy auto-promotion:** deliberately never built. See the safety model above.
 

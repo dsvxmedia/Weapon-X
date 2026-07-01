@@ -19,13 +19,14 @@ what's been learned from actually using it.
 
 ```
 .claude/skills/weaponx/              the orchestrator (the engine, portable)
+.claude/skills/weaponx-discover/     Phase 2: finds work on its own, dispatches through weaponx
 .claude/skills/weaponx-calibrate/    Phase 1.5: checks if the evaluator has drifted
 .claude/skills/weaponx-drift/        Phase 1.5: cross-run trend/health dashboard
 .claude/skills/weaponx-replay/       Phase 1.5: reconstructs one run from its trace
 .claude/agents/weaponx-evaluator.md      primary verifier (separate context from generator)
 .claude/agents/weaponx-evaluator-b.md    second, risk-framed verifier (high-stakes only)
 memory/weaponx/MEMORY.md             durable cross-task facts (instance data, kept short)
-state/weaponx/                       one structured trace file per run (instance data)
+state/weaponx/                       one structured trace file per run, plus discovery-log.md (instance data)
 benchmark/weaponx/                   eval cases captured from real rejections (instance data)
 docs/specs/                          design specs (this is where the "why" lives)
 LEARNING.md                          running process/decision log — read before changing
@@ -50,10 +51,13 @@ would copy.
 
 ## Current phase
 
-Phase 1 (on-demand `/weaponx <task>`) + Phase 1.5 (trust/drift tooling, most of it inert
-until enough run history accumulates in `state/weaponx/`). Phase 2 (scheduled discovery)
-and Phase 3 (always-on/parallel) are explicitly not built yet — see the design spec before
-starting either.
+Phase 1 (on-demand `/weaponx <task>`), Phase 1.5 (trust/drift tooling, most of it inert
+until enough run history accumulates), and Phase 2 (`weaponx-discover` — finds work on its
+own, dispatches it through the unmodified Phase 1 loop) are built. Phase 2's scheduling is
+**not yet activated** — the skill exists but nothing is currently invoking it on a cadence;
+see its own `SKILL.md` for how to turn it on with `/loop`, and why cloud scheduling isn't
+available yet (no `origin` remote). Phase 3 (always-on/parallel dispatch across multiple
+tasks at once) is explicitly not built — see the design spec before starting it.
 
 ## Working in this repo
 
