@@ -118,3 +118,18 @@ taxonomy or retry cap would need immediate rework; it's a point *for* the worry 
 "what does Phase 1 assume about repo/remote state" wasn't specified clearly enough in the
 original design and should be nailed down before the second run, ideally on a task where
 it isn't a low-stakes local fixture.
+
+## 2026-06-30 — Resolved: remote-or-not is a permanent branch, not a precondition
+
+Closed the open question from the first run. Decision: `weaponx` never *requires* a
+remote to function. Move 2 (Handoff) and Move 5 (Persistence) now check `git remote -v`
+explicitly and branch: if `origin` exists, use `EnterWorktree` and gstack `ship`'s real
+push/PR flow (the more correct path when it's available); if not, fall back to plain
+`git worktree add` and stop at an unmerged local branch, and say so plainly rather than
+treating it as a degraded outcome. Reasoning: this is a personal tool meant to be useful
+from the first commit, before it's ever pushed anywhere — requiring a remote as a
+precondition would mean it can't be smoke-tested or trusted locally before the user
+decides to open-source it, which inverts the actual order of how this project is meant to
+grow (prove it locally first, publish once it's proven). Encoded directly in
+`.claude/skills/weaponx/SKILL.md` rather than left as a runtime judgment call, so future
+runs don't have to rediscover this reasoning each time.

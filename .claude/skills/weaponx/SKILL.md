@@ -39,8 +39,17 @@ how the Nodding Loop and Amnesiac Loop failure modes start.
 
 ## Move 2 — Handoff
 
-- **Code tasks:** open an isolated git worktree for this task (`EnterWorktree` /
-  `--worktree`). Never work directly in the user's live working tree.
+- **Code tasks:** open an isolated git worktree for this task. Never work directly in the
+  user's live working tree.
+  - Check `git remote -v` first. If an `origin` remote exists, try `EnterWorktree` — it
+    branches from `origin/<default-branch>` and is the more correct isolation path when a
+    remote is configured.
+  - If there is no `origin` remote, or `EnterWorktree` errors (it will report "not in a
+    git repository" even in a real repo if there's no remote to branch from — a confirmed
+    gap, not a hypothetical), fall back directly to
+    `git worktree add -b weaponx/<task-slug> .worktrees/<task-slug>`. This is expected,
+    permanent, correct behavior for local-only/pre-GitHub use — not a degraded mode to
+    apologize for.
 - **Content/research tasks:** no worktree, but write an explicit, objective definition of
   done before starting — a checkable condition, not "until it feels good" (e.g. "scores
   >= 8/10 against rubric X" or "every claim has a cited source"). If you cannot make the
@@ -109,8 +118,15 @@ containing:
   should look first.
 
 Then:
-- **gstack `ship`** to commit/branch/open a PR for code tasks — never merge it yourself.
-  Content/research deliverables go to a clearly labeled draft location, never published.
+- **Code tasks:** check for an `origin` remote.
+  - If one exists, use gstack `ship` to commit/branch/push/open a PR — never merge it
+    yourself.
+  - If none exists, commit the fix to its feature branch and stop there — no push, no PR
+    attempt (it would just fail). State plainly in the report that the branch
+    `weaponx/<task-slug>` holds the change, unmerged, and that a PR becomes possible once
+    a remote is added. This is not a failure state; it's the correct Phase 1 behavior for
+    a repo that isn't on GitHub yet.
+  - Content/research deliverables go to a clearly labeled draft location, never published.
 - If a durable, project-spanning fact surfaced during the run (a standing preference, a
   recurring constraint, "we tried X and it failed because Y"), append it to
   `memory/weaponx/MEMORY.md` after checking it isn't already there. Keep entries short.
