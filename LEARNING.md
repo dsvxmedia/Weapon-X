@@ -133,3 +133,49 @@ decides to open-source it, which inverts the actual order of how this project is
 grow (prove it locally first, publish once it's proven). Encoded directly in
 `.claude/skills/weaponx/SKILL.md` rather than left as a runtime judgment call, so future
 runs don't have to rediscover this reasoning each time.
+
+## 2026-06-30 — gstack: standalone dependency, not vendored; theory-alignment audit
+
+User asked whether to clone gstack's source directly into this repo to "supercharge" the
+loop. Recommendation given and taken: **standalone**, not vendored. Reasoning: the
+engine/instance split exists specifically so `weaponx` stays portable; vendoring gstack
+reverses that for no functional gain, since `weaponx` only ever calls gstack's skills, it
+never needs to read or modify gstack's internals — and gstack is already installed and
+available in this environment, so there was never actually a "download it" friction
+problem to solve for this user, only for a hypothetical future fork without it (which
+README documentation already covers, no runtime gate needed).
+
+What the user actually valued was gstack's **principles and full end-to-end process** —
+plain-outcome-first reporting, a wide catalog of well-scoped skills that compose. That
+turned into two things: (1) rewriting Move 5's audit packet to lead with a plain-language
+summary and push technical detail underneath, matching how gstack itself reports; (2)
+auditing weaponx against all four research frameworks (the Loop Engineering paper, the AI
+agent harness model, LLMOps, and eval) to find what was still missing, since the user
+explicitly asked for that check rather than just taking the existing build on faith.
+
+**Audit findings and fixes:**
+- **Connectors (MCP) were entirely unaddressed** — the Loop Engineering paper's six parts
+  include this explicitly (it decides "the loop's radius of vision") and nothing in
+  `SKILL.md` said what to do when a task needs an external system. Added to Config,
+  Discovery, and Generation: use whatever MCP connectors are already configured, don't
+  build new integration code.
+- **`BUDGET_CEILING` was discretion, not a number.** The paper is explicit that token
+  blowout's guard is a *real* cap, not judgment. Set concrete starting defaults
+  (~40 tool-calls/cycle, ~150/run) — flagged as unmeasured guesses to revise once real
+  runs show whether they're too tight or too loose.
+- **Comprehension rot had no guard at all.** The paper's defense is regular sampling —
+  added `COMPREHENSION_SAMPLE_INTERVAL` (every 5th run) as a nudge in the plain-language
+  summary, never a block.
+- **gstack was underused relative to what it actually offers.** `investigate` now backs
+  root-cause analysis when the same failure-taxonomy label repeats on a retry (instead of
+  blindly retrying the same fix twice — this is the concrete mechanism that makes
+  `hidden-retry-loop` actually catchable rather than just a label that exists);
+  `handoff` now backs the Handoff move's task packaging; `context-save`/`context-restore`
+  now back Persistence/Discovery's continuity; `retro` now backs the plain-language
+  summary itself.
+
+Everything else audited clean: harness-level concerns (memory, guardrails, notification)
+and LLMOps-level concerns (trace, eval, diagnose, fix-and-redeploy) were already covered
+by the original design. The gaps were specifically the parts of the theory that hadn't
+come up yet in a single smoke-test run — a reminder that "it worked once" and "it matches
+the theory" are different claims, and worth checking separately.

@@ -16,13 +16,24 @@ how the Nodding Loop and Amnesiac Loop failure modes start.
 ## Config (defaults — override per-invocation if the user specifies different numbers)
 
 - `MAX_CYCLES`: 4 generate/verify cycles before stopping and escalating.
-- `BUDGET_CEILING`: stop and escalate if a single run's tool-call/turn count crosses a
-  level that feels disproportionate to the task (use judgment; flag it explicitly in the
-  audit packet either way — exact run cost is always reported).
+- `BUDGET_CEILING`: a real number, not discretion — escalate to `hit-budget-cap` if a
+  single run crosses **~40 tool-calls in one cycle or ~150 across the whole run**. These
+  are starting defaults from the research, not measured; if real runs consistently blow
+  past them on tasks that were clearly fine, loosen them and record why in `LEARNING.md`
+  — but always report exact cost regardless of whether the cap was hit.
 - `HIGH_STAKES_TRIGGERS`: task touches a protected path (main branch config, CI config,
   anything under `.github/`), produces an externally-visible deliverable (email, social
   post, published content), or the user explicitly says "high stakes" / "be careful with
   this one" at invocation.
+- `COMPREHENSION_SAMPLE_INTERVAL`: every 5th completed run (PASS or otherwise), Move 5
+  nudges the human to sample and read one recent run in full rather than trusting the
+  audit packet alone — the guard against comprehension rot from the Loop Engineering
+  paper. This is a nudge, not a gate; it never blocks anything.
+- **Connectors:** if a task needs an external system (an issue tracker, a database, a
+  staging API, Slack, etc.), use whatever MCP connectors are already configured in this
+  environment rather than trying to build new integration code. weaponx does not own
+  connector infrastructure — it borrows what's already connected, same as it borrows
+  gstack's skills.
 
 ## Move 1 — Discovery
 
@@ -34,8 +45,13 @@ how the Nodding Loop and Amnesiac Loop failure modes start.
    project dump. If the task references existing code, use the Explore-agent pattern
    (search/grep for the relevant symbols) rather than reading whole files speculatively.
 4. Check `state/weaponx/` for a prior run on the same or a closely related task. If found,
-   read its trace and continue from there rather than restarting cold.
-5. Determine and state the **high-stakes flag** (yes/no + why) using the triggers above.
+   read its trace and continue from there rather than restarting cold — gstack
+   `context-restore` is the mechanism for this if the prior run's working context is more
+   than what the trace file alone captures.
+5. If the task references an external system (an issue, a ticket, a live database, a
+   deployed environment), that's a **connector** need, not a reason to guess — use the
+   MCP connectors already configured in this environment.
+6. Determine and state the **high-stakes flag** (yes/no + why) using the triggers above.
 
 ## Move 2 — Handoff
 
@@ -55,6 +71,10 @@ how the Nodding Loop and Amnesiac Loop failure modes start.
   >= 8/10 against rubric X" or "every claim has a cited source"). If you cannot make the
   done-condition objective, say so explicitly and flag that verification will rely on
   judgment, not a hard check.
+- **Either domain:** gstack `handoff` is the mechanism for packaging the scoped task +
+  done-condition into something a sub-agent (or a human picking this back up later) can
+  act on without re-deriving context — use it rather than improvising a handoff prompt
+  each time.
 
 ## Move 3 — Generation
 
@@ -68,6 +88,8 @@ how the Nodding Loop and Amnesiac Loop failure modes start.
   - Code: `dev`, `tdd`
   - Content/marketing: `copywriting`, `content-strategy`, or the relevant `marketing-skills:*` skill
   - Research: `understand`, or general research/search tools as appropriate
+- If the task genuinely needs an external system mid-generation (not just at Discovery),
+  use the configured MCP connector for it rather than stubbing/mocking the interaction.
 - Do not declare the task done yourself. Generation hands off to Verification — it never
   self-grades.
 
@@ -100,22 +122,40 @@ human with both verdicts and full reasoning attached.
 
 **Retry loop:** on REJECT (single-evaluator or consensus path), feed the failure-taxonomy
 label and the fixable surface back into Move 3 as a targeted repair instruction. Increment
-the cycle count. If `MAX_CYCLES` is reached without a PASS, stop — do not keep retrying —
-and go straight to Move 5 with a `hit-retry-cap` verdict.
+the cycle count. If the same failure-taxonomy label repeats on cycle 2 (the first retry
+didn't actually fix the root cause, just tried again), stop guessing and dispatch gstack
+`investigate` for systematic root-cause analysis before cycle 3 — a second blind retry on
+the same failure is exactly the `hidden-retry-loop` pattern this taxonomy exists to catch.
+If `MAX_CYCLES` is reached without a PASS, stop — do not keep retrying — and go straight
+to Move 5 with a `hit-retry-cap` verdict.
 
 ## Move 5 — Persistence
 
-Write one structured trace record to `state/weaponx/<task-slug>-<timestamp>.md`
-containing:
-- Task description, inferred domain, timestamp, high-stakes flag + reason.
-- Per-cycle log: what was attempted, tool calls made, evaluator verdict(s), failure
-  taxonomy label when rejected, fixable surface identified.
-- Cost: tokens/turns per cycle and total, wall-clock time.
-- Final verdict: `PASS` / `hit-retry-cap` / `hit-budget-cap` / `escalated-on-disagreement`,
-  with links to the resulting branch/PR or deliverable.
-- The **audit/handoff packet**: what was attempted, what was actually checked (and by
-  which gstack skill), per-claim confidence tags, what remains uncertain, where a human
-  should look first.
+Write one structured trace record to `state/weaponx/<task-slug>-<timestamp>.md`. Lead with
+the part a human actually reads; put the technical detail underneath, not first — you're
+writing for someone who wants the outcome, not for someone who wants to parse a log:
+
+1. **Plain-language summary first** (this is the audit/handoff packet — write it the way
+   gstack's own reports read, outcome first, jargon-free): what was attempted, whether it
+   actually worked, what was actually checked versus just claimed, what remains uncertain,
+   and exactly where to look if something needs a human decision. Use gstack `retro` as
+   the mechanism for producing this summary well rather than improvising the tone each
+   time.
+2. **Technical detail underneath**, for when it's needed, not skimmed past every time:
+   task description, inferred domain, timestamp, high-stakes flag + reason, per-cycle log
+   (attempts, tool calls, evaluator verdict(s), failure-taxonomy labels, fixable surfaces),
+   cost (tokens/turns per cycle and total, wall-clock time), final verdict (`PASS` /
+   `hit-retry-cap` / `hit-budget-cap` / `escalated-on-disagreement`), links to the
+   resulting branch/PR or deliverable, and per-claim confidence tags.
+
+Use gstack `context-save` to persist the run's working context alongside the trace file
+when the task was complex enough that the trace summary alone wouldn't let a fresh session
+pick it back up cleanly.
+
+**Comprehension-rot nudge:** if this run is a multiple of `COMPREHENSION_SAMPLE_INTERVAL`
+(check the count of files in `state/weaponx/`), add one line to the plain-language summary
+suggesting the human skim a recent run with `weaponx-replay` rather than trusting audit
+packets alone. Nudge only — never block on this.
 
 Then:
 - **Code tasks:** check for an `origin` remote.
@@ -150,3 +190,7 @@ Then:
 4. **Never skip Verification, even under budget pressure.** If you're tempted to declare
    a task done without running the evaluator because the cycle budget is tight, stop and
    report `hit-budget-cap` instead — an unverified PASS is worse than an honest stop.
+
+These four are weaponx's own rules, enforced by the orchestrator itself — they don't
+depend on gstack. If gstack's own `guard` skill is relevant to the task at hand, it's a
+second, independent layer on top of these, not a replacement for them.
