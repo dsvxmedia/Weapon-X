@@ -26,3 +26,10 @@ the bottom, optionally tagged with the task/date it came from.
   the spec itself conflicts), the evaluator should use `other-with-detail`, not force-fit
   a category like `wrong-tool-choice`. A live run picked the wrong label for exactly this
   case. (from: retry-cap-double, 2026-06-30)
+- Ambient config (like `git config user.name`) is not a reliable source for
+  legally/publicly significant attribution. It should be treated as a blocking question
+  for the human, not a plausible-default fill-in — internal consistency (matches the repo's
+  own git config) is not the same as correctness (matches what the human actually wants on
+  a public document). A live run on adding a LICENSE hit exactly this: `dsvxmedia` matched
+  git config but not the user's known identity, and the two evaluators split on whether
+  that mattered. (from: add-license, 2026-06-30)
