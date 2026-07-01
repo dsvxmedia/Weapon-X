@@ -256,3 +256,47 @@ not paging someone who's clearly still watching — which was the right call her
 worth remembering this hasn't yet been tested in a scenario where firing it actually was
 the correct behavior (an unattended run). That's still an open validation gap, not a
 closed one.
+
+## 2026-06-30 — Remaining Phase 1 mechanisms pressure-tested
+
+Closed out the rest of the untested paths from the second gap pass, three more real runs
+plus two dry-runs of the Phase 1.5 tools:
+
+**Model-tiering, PASS path.** `pass-path-fix` — a genuine off-by-one bug, unrelated to any
+prior fixture — passed clean on cycle 1, evaluator on the haiku tier, every claim
+`verified`. Combined with the retry-cap test's REJECT-path confirmation, model-tiering is
+now validated on both outcomes, not just one.
+
+**Parallel dual-evaluator consensus.** `high-stakes-discount-fix` — explicitly flagged
+high-stakes by the user at invocation (the "user says so" trigger, not a protected-path
+trigger). Both evaluators dispatched in the same message, both reached PASS independently
+with zero disagreement — but the interesting result wasn't the agreement, it was that
+evaluator B's risk-framed lens surfaced real findings (no bounds validation, float
+precision on money, thin test coverage) that evaluator A's correctness-framed check
+structurally could not have produced. That's a stronger validation of the design than a
+forced disagreement would have been: it shows the two evaluators add independent value
+even when they agree, not just when they don't. Consensus roughly doubled verification
+cost versus a single evaluator (~31.6k vs ~15k tokens) — real, worth remembering when
+deciding what actually qualifies as high-stakes, since it's not free.
+
+**`weaponx-drift` dry run.** Correctly refused to report trends from 5 data points, most
+of them deliberately engineered pressure-test fixtures rather than organic tasks. Flagged
+that the 40% hit-cap rate would be misleading read at face value (both hit-caps are the
+same intentionally-impossible task) and that the repeated `wrong-tool-choice` label
+doesn't qualify as a cross-task recurring pattern under its own definition. This is the
+tool behaving correctly under thin data, which was worth confirming before ever trusting
+it under real data.
+
+**`weaponx-calibrate` dry run.** Stopped immediately — one benchmark case exists, and
+computing an "agreement rate" from n=1 would be actively misleading rather than just
+unhelpful. Correct behavior per its own instructions. Real calibration signal needs
+organic REJECTs/weak-PASSes from actual work, not more engineered-to-fail fixtures — worth
+remembering not to pad the benchmark set artificially just to unblock this tool, since
+that would defeat its purpose.
+
+**State of Phase 1 + 1.5 after this pass:** every mechanism from both gap passes has now
+been exercised at least once with a real run, not just re-read and trusted. The one
+mechanism that still hasn't been tested in the scenario it's actually for is the
+unattended notification path — can't test that honestly from inside an active
+conversation, and it stays an open gap until there's a genuinely unattended run to
+observe it on.
