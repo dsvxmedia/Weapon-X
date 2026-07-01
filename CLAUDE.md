@@ -1,9 +1,8 @@
 # Weapon X
 
-A personal, eventually-open-source Claude Code loop: a challenge-loop orchestrator
-(`/weaponx <task>`) built on the `gstack` skill suite that plans, generates, verifies, and
-persists its own work instead of producing a single best-effort pass. Full design
-rationale lives in `docs/specs/2026-06-30-weaponx-phase1-design.md`.
+A personal Claude Code loop: a challenge-loop orchestrator (`/weaponx <task>`) that plans,
+generates, verifies, and persists its own work instead of producing a single best-effort
+pass. Full design rationale lives in `docs/specs/2026-06-30-weaponx-phase1-design.md`.
 
 ## What this repo is, in one paragraph
 

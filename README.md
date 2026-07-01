@@ -5,9 +5,11 @@ content/marketing, or open-ended research — and it plans, generates, verifies 
 work with an independent skeptical evaluator, persists a full audit trail, and stops to
 hand control back to you rather than merging, deploying, or publishing anything itself.
 
-Built on top of the [`gstack`](https://gstack.dev) skill suite (`qa`, `review`, `ship`,
-`canary`, `benchmark`, `investigate`, `triage`, `design-review`, and more) rather than
-reimplementing verification, QA, or shipping mechanics from scratch.
+The core idea: the agent that writes never grades its own work. A separate evaluator,
+running in its own context with no visibility into the generator's reasoning, checks the
+result by actually running it, not just reading it. Anything flagged high-stakes gets a
+second, independently-framed evaluator too, and the two have to agree before anything is
+allowed to pass.
 
 ## Why
 
@@ -27,9 +29,11 @@ behaves.
 ## Prerequisites
 
 - [Claude Code](https://claude.com/claude-code)
-- The `gstack` skill suite installed (the orchestrator dispatches to its `qa`, `review`,
-  `ship`, `design-review`, `canary`, `benchmark`, `dev`, `tdd`, and marketing/content
-  skills depending on task domain)
+- A skill suite covering test/build verification, code review, and PR mechanics — the
+  orchestrator dispatches to it for the actual QA, review, and shipping work rather than
+  reimplementing that from scratch. Built and tested against
+  [`gstack`](https://gstack.dev); any comparable suite should work with light edits to
+  `.claude/skills/weaponx/SKILL.md`.
 
 ## Usage
 

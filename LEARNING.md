@@ -405,3 +405,31 @@ worth noting for next time this comes up: local branch cleanup pre-GitHub is clo
 risk-free (git retains deleted commits via reflog for weeks regardless), which is part of
 why the safe default is to prefer deleting over indefinitely accumulating exploratory
 branches, rather than treating "keep everything just in case" as the safer choice.
+
+## 2026-06-30 — Repo went public, then de-branded the front door
+
+Created the GitHub repo (`dsvxmedia/Weapon-X`, public, MIT) and pushed. Shortly after,
+asked to remove gstack branding from the public copy so the presentation centers on what
+was actually built, not the dependency it's built on.
+
+**Scope decision, deliberately narrow:** public-facing copy only (`README.md`,
+`CLAUDE.md`) — not the functional engine. `weaponx/SKILL.md` and the evaluator agents
+still call gstack skills directly for real work (QA, review, shipping, investigation);
+removing those calls without replacing them would break verification entirely, which is
+the one thing this project cannot afford to fake. De-branding the presentation and gutting
+the engine are different requests, and conflating them would have been a real mistake.
+
+**One deliberate exception, flagged rather than silently decided:** the README's
+Prerequisites section keeps one functional mention of gstack, because it's genuinely a
+setup requirement, not narrative credit — removing it would leave anyone forking the repo
+with no explanation for why the tool fails until they install the right dependency.
+Reworded to name it as "built and tested against," with a note that a comparable suite
+should work with light edits, rather than presenting it as the only possible option.
+
+**What didn't get touched, on purpose:** this file and `docs/specs/` still describe
+gstack extensively, because both are accurate historical records of what actually happened
+while building this, not living marketing copy. Scrubbing them would mean rewriting true
+history to make the past look different than it was — which is exactly what this file's
+own stated convention (append-only, don't edit old entries even in hindsight) exists to
+prevent. If the public-facing story and the internal build history read differently now,
+that's intentional: one is the presentation, the other is the record.
