@@ -31,11 +31,32 @@ gh secret set TELEGRAM_BOT_TOKEN --body "123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxx
 gh secret set TELEGRAM_CHAT_ID   --body "987654321"
 ```
 
-The headless dispatch workflow also needs an Anthropic API key to run Claude Code:
+The headless dispatch workflow also needs Claude Code authentication — **pick one**, not
+both:
+
+**Option A — subscription (Pro/Max), no metered API billing (recommended if you have one):**
+
+```sh
+claude setup-token
+```
+
+This must be run in your own terminal, not through an agent session — it opens a browser
+for an OAuth login and cannot complete non-interactively. It prints a token valid for 1
+year. Then:
+
+```sh
+gh secret set CLAUDE_CODE_OAUTH_TOKEN --body "<the token setup-token printed>"
+```
+
+**Option B — metered API key**, from https://console.anthropic.com/settings/keys:
 
 ```sh
 gh secret set ANTHROPIC_API_KEY --body "sk-ant-..."
 ```
+
+`push-dispatch.yml` checks for `CLAUDE_CODE_OAUTH_TOKEN` first and falls back to
+`ANTHROPIC_API_KEY`; it fails with a clear error at the start of the run if neither is set,
+rather than failing cryptically partway through.
 
 (`GITHUB_TOKEN` is provided automatically by Actions — you do not set it.)
 
@@ -46,8 +67,8 @@ gh secret list
 ```
 
 The workflow YAML references these as `${{ secrets.TELEGRAM_BOT_TOKEN }}`,
-`${{ secrets.TELEGRAM_CHAT_ID }}`, and `${{ secrets.ANTHROPIC_API_KEY }}` — no token is
-ever hardcoded.
+`${{ secrets.TELEGRAM_CHAT_ID }}`, `${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`, and
+`${{ secrets.ANTHROPIC_API_KEY }}` — no token is ever hardcoded.
 
 ## 4. Create the `weaponx-approval` GitHub Environment (the human ship-gate)
 

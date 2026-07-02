@@ -53,9 +53,33 @@ jobs:
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
+      - name: Check auth is configured
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          # Either auth method works — CLAUDE_CODE_OAUTH_TOKEN (Pro/Max subscription,
+          # generated locally with `claude setup-token`, no per-token API billing)
+          # or ANTHROPIC_API_KEY (metered). Fail loud and early if neither is set,
+          # rather than letting the CLI fail cryptically two steps from now.
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN}" ] && [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::error::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set as a repo secret. See SETUP.md." >&2
+            exit 1
+          fi
+          if [ -n "${CLAUDE_CODE_OAUTH_TOKEN}" ]; then
+            echo "Using CLAUDE_CODE_OAUTH_TOKEN (subscription auth)."
+          else
+            echo "Using ANTHROPIC_API_KEY (metered auth)."
+          fi
+
       - name: Run weaponx headless
         id: weaponx
         env:
+          # Claude Code's CLI picks up CLAUDE_CODE_OAUTH_TOKEN over ANTHROPIC_API_KEY
+          # when both are present. Passing both here is safe — an empty secret
+          # resolves to an empty string, which the CLI treats as unset.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
