@@ -664,3 +664,29 @@ confirmed by reading the GHA templating mechanics, which is the standard way thi
 bug is found and fixed, not by proving impact). Full Path 2 happy-path (message → dispatch
 → actual weaponx run → PR) remains unverified until `main` has the workflow files — that's
 the next real test once PR #3 merges, not before.
+
+## 2026-07-01 (cont.) — First real Path 2 run: everything worked except subscription usage
+
+PR #3 merged, unblocking the hard blocker documented above. Sent a real `/weaponx` command
+from Telegram immediately after: n8n correctly gated the chat id, sent the ack, and the
+GitHub dispatch call returned 204 (confirmed via n8n's execution log, not assumed). GitHub
+registered and ran the workflow (`gh run list` showed a real run within seconds of the
+dispatch). The run itself failed after 20 seconds — not from anything PUSH built, the auth
+pre-flight check correctly found `CLAUDE_CODE_OAUTH_TOKEN` set and used it, `claude -p`
+invoked correctly, and then hit "You've hit your session limit" from the Pro subscription's
+own usage window.
+
+**Worth knowing, not a defect:** `CLAUDE_CODE_OAUTH_TOKEN` draws against the same shared
+usage pool as every interactive Claude Code session on the account, including whatever
+today's own pressure-testing session consumed. A cold-start run triggered from a phone on a
+day the account is already near its subscription usage cap can fail this way, and the
+failure is real (the run does stop) but has nothing to do with PUSH's own correctness — the
+entire pipeline up to that point (n8n routing, GitHub dispatch, workflow registration, the
+auth pre-flight check) is now verified working end to end.
+
+**Tradeoff worth naming explicitly, not deciding here:** `ANTHROPIC_API_KEY` (metered
+billing) doesn't share this cap — it costs money per token instead, with no usage window to
+run into. If cold-start reliability during heavy interactive-usage days matters more than
+avoiding metered cost, setting `ANTHROPIC_API_KEY` as a fallback (both can coexist; the
+auth pre-flight check already prefers `CLAUDE_CODE_OAUTH_TOKEN` when both are present) would
+close this specific failure mode. Left as the operator's call, not changed unilaterally.
