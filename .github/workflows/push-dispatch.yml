@@ -25,16 +25,69 @@ concurrency:
   group: push-dispatch
   cancel-in-progress: false
 
-permissions:
-  contents: write        # weaponx works on a branch; ship opens a PR
-  pull-requests: write
+# NOTE: permissions are scoped PER JOB below, not granted workflow-wide. The `run`
+# job executes BEFORE the human-approval gate, so its GITHUB_TOKEN must not be able
+# to open a PR even if the headless agent is tricked/regresses into trying — that is
+# a credential-level guarantee, not a prompt instruction. Only the gated `ship` job
+# gets `pull-requests: write`. A top-level block here would leak that scope into the
+# `run` job (jobs inherit the workflow-level permissions unless they override), which
+# is exactly what we must avoid. GitHub Actions applies the narrowest matching block:
+# a per-job `permissions:` fully replaces the (here, absent) workflow-level one.
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    # The run job pushes a weaponx/* branch and NOTHING more. It must NOT be able to
+    # open a PR — that capability belongs solely to the gated `ship` job below. Giving
+    # it only `contents: write` makes "cannot open a PR" a hard credential fact.
+    permissions:
+      contents: write
+    # Exposed to the gated `ship` job so it knows exactly which branch weaponx
+    # produced. See the "Detect the branch weaponx pushed" step for how these are set.
+    outputs:
+      branch: ${{ steps.detect.outputs.branch }}      # the weaponx/* branch that was pushed, or "" if none
+      head_sha: ${{ steps.detect.outputs.head_sha }}   # its tip commit, for the ship-time integrity check
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history + credentials persisted so the headless weaponx run can
+          # push the branch it creates back to origin (Option A — see the design
+          # note on the "Detect the branch weaponx pushed" step below).
+          fetch-depth: 0
+
+      - name: Configure git identity for the headless run
+        run: |
+          set -euo pipefail
+          # weaponx's Persistence move commits on a branch; give it a committer
+          # identity so `git commit` / `gstack ship` don't fail on a bare runner.
+          git config user.name  "weaponx-push[bot]"
+          git config user.email "weaponx-push[bot]@users.noreply.github.com"
+
+      - name: Snapshot existing weaponx/* branches on origin (pre-run baseline)
+        id: baseline
+        run: |
+          set -euo pipefail
+          # Record which weaponx/* branches already exist on origin BEFORE the run,
+          # AND at which commit. There are already several such branches from prior
+          # runs, so "find any weaponx branch" is ambiguous — we must diff against
+          # this baseline to isolate the branch THIS run produced OR advanced.
+          #
+          # We capture the FULL `sha<TAB>refname` pair, not just the ref name. This is
+          # load-bearing: weaponx's discovery move (SKILL.md Move 1) RESUMES an existing
+          # weaponx/<task-slug> branch when a task previously hit hit-retry-cap /
+          # hit-budget-cap, or when the same task text is dispatched again. In that case
+          # the branch NAME already exists in this baseline, but its tip SHA changes when
+          # this run pushes new commits. Keying the diff on the (sha, name) pair means a
+          # name-unchanged-but-sha-advanced branch is correctly seen as "this run produced
+          # new commits", instead of being silently classified as "nothing to ship".
+          #
+          # Normalize to "sha<space>refs/heads/name" (single space) so the before/after
+          # files compare byte-for-byte with `comm`. Written to a file (not an output) so
+          # the multiline list survives verbatim into the detect step.
+          git ls-remote --heads origin 'refs/heads/weaponx/*' \
+            | awk '{print $1" "$2}' | sort > "$RUNNER_TEMP/weaponx-branches-before.txt"
+          echo "Baseline weaponx/* branch count: $(wc -l < "$RUNNER_TEMP/weaponx-branches-before.txt" | tr -d ' ')"
 
       - name: Notify — run starting
         env:
@@ -86,11 +139,100 @@ jobs:
           TASK: ${{ inputs.task }}
         run: |
           set -euo pipefail
-          # Headless weaponx: the loop plans, generates, verifies, and persists,
-          # stopping at an unmerged PR/draft exactly as an interactive run would.
+          # Headless weaponx: the loop plans, generates, verifies, and persists.
           # Because TELEGRAM_* are exported here, weaponx's optional PUSH steps
           # (Moves 4 & 5) will emit checkpoints/briefs over Telegram too.
-          claude -p "/weaponx ${TASK}"
+          #
+          # DESIGN (Option A, human-gated PR): weaponx's normal Persistence move
+          # (Move 5) both pushes the branch AND opens a PR via `gstack ship` when an
+          # origin remote exists. For THIS cold-start path we want the branch pushed
+          # (so the separate, isolated `ship` job runner can see it after a fetch)
+          # but we want PR creation itself deferred behind the `weaponx-approval`
+          # environment gate. So we append an explicit constraint to the task: push
+          # the branch, do NOT open the PR — the workflow's gated ship job does that.
+          # This is stricter than weaponx's default (which opens PRs freely and only
+          # gates merging); it does not relax any rule, it tightens one.
+          #
+          # The appended text is a STATIC string literal — the only interpolated
+          # value here is "$TASK", which comes from env: (this comment intentionally
+          # avoids writing the literal double-curly Actions expression syntax here —
+          # even inside a run: block comment, GitHub's own template parser chokes on
+          # it, which is exactly the bug a prior verification pass caught on this
+          # line), so this does not reintroduce the script-injection class fixed in
+          # push-poll.yml.
+          # The prompt is one bash string. $TASK expands from env: (injection-safe);
+          # everything after it is a static literal constraint. Newlines inside the
+          # prompt would break this YAML block scalar's indentation, so it stays on
+          # one logical line — weaponx reads it fine either way.
+          CONSTRAINT="IMPORTANT constraint for this specific run (cold-start CI dispatch): when you reach the Persistence move and an origin remote exists, PUSH the resulting weaponx/<task-slug> branch to origin, but do NOT open a pull request. A separate, human-approved CI job opens the PR after this run finishes. Push the branch and stop; do not run any PR-open step (skip the 'gh pr create' / PR-opening part of 'gstack ship'). If the run produces no branch or no changes, that is fine — just do not open a PR."
+          claude -p "/weaponx ${TASK} -- ${CONSTRAINT}"
+
+      - name: Detect the branch weaponx pushed
+        id: detect
+        if: always()
+        run: |
+          set -euo pipefail
+          # Option A, continued. Diff origin's weaponx/* branches against the pre-run
+          # baseline to find exactly the branch this run pushed. Robust to however
+          # weaponx laid out its local worktree — we trust origin's ref list, which
+          # also doubles as proof the push actually happened (requirement: the real
+          # branch, not a placeholder/simulated one).
+          #
+          # Why a pushed-but-not-yet-PR'd branch is safe under this repo's actual
+          # hard rules: CLAUDE.md rule #1 is "Never auto-merge, auto-deploy, or
+          # auto-publish." A branch sitting in origin's git history is none of those
+          # three — it is not merged into main, not deployed anywhere, and not
+          # published as a reviewable/mergeable PR. The human-gated action (opening
+          # the PR, i.e. making the work visible and mergeable) still correctly waits
+          # for the `weaponx-approval` environment in the ship job below. main itself
+          # stays protected by branch protection regardless.
+          git fetch --quiet origin '+refs/heads/weaponx/*:refs/remotes/origin/weaponx/*' || true
+          # Capture the same "sha<space>refs/heads/name" pairs as the baseline so the
+          # diff is keyed on the (commit, name) tuple, not the name alone.
+          git ls-remote --heads origin 'refs/heads/weaponx/*' \
+            | awk '{print $1" "$2}' | sort > "$RUNNER_TEMP/weaponx-branches-after.txt"
+
+          # Changed pairs = lines present in "after" but not in "before". comm -13 gives
+          # lines only in the after set. Because the line embeds the SHA, this catches:
+          #   (a) a brand-new branch name (no matching before line at all), AND
+          #   (b) an EXISTING branch name whose SHA advanced (the resume case) — its old
+          #       "sha name" line was in before, its new "sha name" line is only in after.
+          # A truly-unchanged branch has an identical "sha name" line in both, so it does
+          # NOT appear here. That is exactly the correct three-way behavior.
+          CHANGED_PAIRS="$(comm -13 \
+            "$RUNNER_TEMP/weaponx-branches-before.txt" \
+            "$RUNNER_TEMP/weaponx-branches-after.txt" || true)"
+
+          # Count DISTINCT branch names that changed (field 2 = refs/heads/name), not raw
+          # lines — defensive, though under the single-run concurrency group at most one
+          # branch should ever move. A branch tip only advances (one after-line), so name
+          # count and line count coincide here; deduping by name keeps the >1 guard honest.
+          CHANGED_NAMES="$(printf '%s\n' "$CHANGED_PAIRS" | awk 'NF{print $2}' | sort -u)"
+          COUNT="$(printf '%s\n' "$CHANGED_NAMES" | grep -c . || true)"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No new or advanced weaponx/* branch on origin — the run produced nothing to ship."
+            echo "branch=" >> "$GITHUB_OUTPUT"
+            echo "head_sha=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$COUNT" -gt 1 ]; then
+            # Should not happen under the single-run concurrency group, but fail loud
+            # rather than guess which branch to ship.
+            echo "::error::Expected at most one new/advanced weaponx/* branch, found ${COUNT}:" >&2
+            printf '%s\n' "$CHANGED_NAMES" >&2
+            exit 1
+          fi
+
+          REF="$(printf '%s\n' "$CHANGED_NAMES" | grep . | head -n1)"
+          BRANCH="${REF#refs/heads/}"
+          # Re-resolve the tip from origin (authoritative) rather than trusting the
+          # possibly-raced after-file, matching the ship job's own ls-remote integrity check.
+          SHA="$(git ls-remote origin "$REF" | awk '{print $1}')"
+          echo "weaponx pushed branch: ${BRANCH} @ ${SHA}"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Notify — verification/persistence done
         if: always()
@@ -119,13 +261,40 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    # The branch weaponx produced (or "" if it produced nothing worth shipping).
+    # Carried over from the run job's outputs — Option A means the branch already
+    # lives on origin, so this job just needs its NAME, not the branch contents.
+    env:
+      WEAPONX_BRANCH: ${{ needs.run.outputs.branch }}
+      WEAPONX_HEAD_SHA: ${{ needs.run.outputs.head_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # "Nothing to ship" case (requirement 3): weaponx ended in hit-retry-cap /
+      # hit-budget-cap, correctly determined the task was already done, or otherwise
+      # produced no branch. Don't open a garbage/empty PR — notify over Telegram and
+      # end this job cleanly. This runs FIRST so the "opening the PR" message and the
+      # gh pr create step below are skipped entirely when there's nothing to open.
+      - name: Notify — nothing to ship (no branch produced)
+        if: ${{ needs.run.outputs.branch == '' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          echo "The run job produced no weaponx/* branch — nothing to open a PR for."
+          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=The weaponx run finished but produced no branch to ship (it may have hit a retry/budget cap, or correctly found nothing needed changing). Nothing to open a PR for — no action needed from you." \
+            --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+
       - name: Notify — approved, opening PR
+        if: ${{ needs.run.outputs.branch != '' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -138,14 +307,83 @@ jobs:
             --data-urlencode "text=You approved the weaponx run. Opening the PR now — it still stops at an open PR for you to merge; nothing auto-merges." \
             --data-urlencode "disable_web_page_preview=true" >/dev/null || true
 
-      # NOTE: the actual branch/PR that weaponx produced lives in the `run` job's
-      # runner and is not automatically shared with this job. A full implementation
-      # would push the weaponx branch from the run job (e.g. as an artifact or by
-      # pushing to origin) and open the PR here. Left as a documented gap so the
-      # human-approval gate is wired correctly first; see SETUP.md / the PR notes.
-      - name: Open PR (placeholder — see note above)
+      # Open the PR — and ONLY open it. This is the terminal state: base main, from
+      # the branch weaponx already pushed to origin. It must never merge (matching
+      # every other part of this repo and weaponx's own hard rule #1). The branch
+      # contents are already on origin from the run job (Option A), so this job only
+      # references the branch by name after a fetch — no artifact transfer needed.
+      - name: Open PR against main (never merge)
+        if: ${{ needs.run.outputs.branch != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Branch/sha come from run job outputs via env: above — never inline ${{ }}
+          # inside this run: block, matching the injection-safe pattern in this file.
         run: |
-          echo "Human approved via the weaponx-approval environment."
-          echo "PR-opening wiring is intentionally left as a documented gap; see SETUP.md."
+          set -euo pipefail
+
+          # Confirm the branch really exists on origin before trying to open a PR
+          # against it (guards against a stale/rewritten ref between jobs).
+          if ! git ls-remote --exit-code --heads origin "refs/heads/${WEAPONX_BRANCH}" >/dev/null 2>&1; then
+            echo "::error::Expected branch '${WEAPONX_BRANCH}' not found on origin at ship time." >&2
+            if [ -n "${TELEGRAM_BOT_TOKEN}" ]; then
+              curl -sS -X POST \
+                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                --data-urlencode "text=Tried to open the PR after your approval, but the weaponx branch was no longer on origin. Nothing was merged; please check the Actions log." \
+                --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+            fi
+            exit 1
+          fi
+
+          # If a PR from this branch into main already exists (e.g. a re-approved
+          # re-run), don't create a duplicate — reuse it. `gh pr create` would error
+          # on a duplicate otherwise.
+          EXISTING_URL="$(gh pr list --head "${WEAPONX_BRANCH}" --base main \
+            --state open --json url --jq '.[0].url // empty' 2>/dev/null || true)"
+
+          if [ -n "${EXISTING_URL}" ]; then
+            PR_URL="${EXISTING_URL}"
+            echo "A PR for ${WEAPONX_BRANCH} already exists: ${PR_URL}"
+          else
+            # --fill uses the branch's commit(s) for title/body. Explicitly base=main,
+            # head=the weaponx branch. NO merge flag anywhere — opening + stopping is
+            # the correct terminal state.
+            PR_URL="$(gh pr create \
+              --base main \
+              --head "${WEAPONX_BRANCH}" \
+              --title "weaponx (cold-start): ${WEAPONX_BRANCH}" \
+              --body "Opened by the human-approved PUSH cold-start ship job after a headless weaponx run. This PR is intentionally left unmerged — a human still reviews and merges it (nothing auto-merges). Branch tip at ship time: ${WEAPONX_HEAD_SHA}." \
+              --fill 2>/dev/null || true)"
+
+            # `gh pr create --fill` can fail if the branch has no commit diff vs main.
+            # Treat that as another "nothing to ship" outcome rather than a hard error.
+            if [ -z "${PR_URL}" ]; then
+              # Fall back to whatever gh reports for this head, in case the PR was
+              # actually created but the URL capture raced.
+              PR_URL="$(gh pr list --head "${WEAPONX_BRANCH}" --base main \
+                --state open --json url --jq '.[0].url // empty' 2>/dev/null || true)"
+            fi
+          fi
+
+          if [ -z "${PR_URL}" ]; then
+            echo "::warning::Branch ${WEAPONX_BRANCH} exists but no PR could be opened (likely no diff vs main)."
+            if [ -n "${TELEGRAM_BOT_TOKEN}" ]; then
+              curl -sS -X POST \
+                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                --data-urlencode "text=Approved, but the weaponx branch had no changes to open a PR from (no diff vs main). Nothing merged; nothing to review." \
+                --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+            fi
+            exit 0
+          fi
+
+          echo "Opened (unmerged) PR: ${PR_URL}"
+          if [ -n "${TELEGRAM_BOT_TOKEN}" ]; then
+            curl -sS -X POST \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=PR is open and waiting for your review: ${PR_URL} — it is NOT merged. Review and merge it yourself when ready." \
+              --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+          fi
