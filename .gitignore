@@ -2,8 +2,12 @@
 *.log
 .env
 .env.*
+!.env.example
 node_modules/
 __pycache__/
 *.pyc
 .worktrees/
 .gstack/
+
+# PUSH (weaponx-push) runtime state — pending decision markers, not committed
+.claude/skills/weaponx-push/.pending/

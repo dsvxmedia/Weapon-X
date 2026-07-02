@@ -168,6 +168,17 @@ the same failure is exactly the `hidden-retry-loop` pattern this taxonomy exists
 If `MAX_CYCLES` is reached without a PASS, stop — do not keep retrying — and go straight
 to Move 5 with a `hit-retry-cap` verdict.
 
+**Optional — PUSH checkpoint (only if configured):** if PUSH is configured
+(`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are both set in the environment), also send a
+plain-English checkpoint at the end of this move via
+`.claude/skills/weaponx-push/bin/push-bridge.sh send --text "<checkpoint>"` — in addition
+to, never instead of, the existing behavior. If the evaluators disagreed on a high-stakes
+task (the escalate-to-human path above), send a **decision brief** instead of a plain
+checkpoint (`push-bridge.sh brief` with 2-4 options plus the free-text path, then
+`push-bridge.sh wait --id <id>` for the reply that resumes the loop). If PUSH is not
+configured, the bridge exits with a "skipping" status and the loop proceeds exactly as it
+does today — PUSH is never a dependency here.
+
 ## Move 5 — Persistence
 
 Write one structured trace record to `state/weaponx/<task-slug>-<timestamp>.md`. Lead with
@@ -226,6 +237,15 @@ Then:
   `memory/weaponx/MEMORY.md` after checking it isn't already there. Keep entries short.
 - If the run ends waiting on the human (review, retry-cap, disagreement, budget-cap),
   fire a notification immediately rather than waiting for them to check back.
+  - **Optional — PUSH decision brief (only if configured):** if PUSH is configured
+    (`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are both set), also send a decision brief
+    over Telegram via `.claude/skills/weaponx-push/bin/push-bridge.sh brief` — a
+    plain-English explanation of what's being decided, a clear recommendation, 2-4 concrete
+    options, and always the implicit "or tell me what you want instead" free-text path —
+    then `push-bridge.sh wait --id <id>` for the reply that resumes the loop. For a clean
+    PASS with a PR ready for review, a plain `push-bridge.sh send` checkpoint is enough.
+    This is in addition to (not instead of) the immediate notification and the trace file;
+    if PUSH is not configured the bridge exits "skipping" and nothing else changes.
 - On REJECT or on a human overriding a PASS later, copy the task + reasoning + correct
   outcome into `benchmark/weaponx/<task-slug>.md` as a reusable eval case, tagged `reject`
   or `override`.

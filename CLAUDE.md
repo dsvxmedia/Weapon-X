@@ -22,6 +22,11 @@ what's been learned from actually using it.
 .claude/skills/weaponx-calibrate/    Phase 1.5: checks if the evaluator has drifted
 .claude/skills/weaponx-drift/        Phase 1.5: cross-run trend/health dashboard
 .claude/skills/weaponx-replay/       Phase 1.5: reconstructs one run from its trace
+.claude/skills/weaponx-push/         optional add-on: Telegram checkpoints + decision briefs
+                                     (bash/curl/jq bridge + two GitHub Actions workflows;
+                                     gated behind config, not part of the portable core)
+.github/workflows/push-poll.yml      PUSH Path 2: polls Telegram for cold-start /weaponx cmds
+.github/workflows/push-dispatch.yml  PUSH Path 2: runs weaponx headless, human-gated ship
 .claude/agents/weaponx-evaluator.md      primary verifier (separate context from generator)
 .claude/agents/weaponx-evaluator-b.md    second, risk-framed verifier (high-stakes only)
 memory/weaponx/MEMORY.md             durable cross-task facts (instance data, kept short)
@@ -40,6 +45,17 @@ LEARNING.md                          running process/decision log — read befor
 specific state, memory, or benchmark contents. Everything under `memory/`, `state/`, and
 `benchmark/` is this project's own accumulated history and is not part of what a fork
 would copy.
+
+**PUSH is an optional add-on, deliberately outside that portable core.** It sits between
+the two categories: `.claude/skills/weaponx-push/` (the bash/curl/jq bridge + its docs) is
+reasonably portable — a fork could reuse it by setting `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` — but its GitHub Actions workflows (`.github/workflows/push-*.yml`) are
+specific to this repo's CI and its `weaponx-approval` environment, so the workflows are best
+treated as this instance's wiring rather than reusable engine. The reason for placing PUSH
+outside the core rather than inside it: the engine must never gain a hard dependency on an
+external service, so PUSH is gated entirely behind config — unset the two env vars and every
+PUSH step is skipped and weaponx behaves exactly as it does today. A fork without PUSH
+configured is not broken.
 
 ## Hard rules (do not relax these without updating LEARNING.md to explain why)
 
@@ -74,6 +90,11 @@ tasks at once) is explicitly not built — see the design spec before starting i
 - After any change to how the loop behaves (not just what it does), add an entry to
   `LEARNING.md` rather than only to git history — the point is a human (or future Claude
   session) can understand the system's evolution without archaeology through commits.
-- This repo has no build step, no dependencies, and no tests yet — it's Claude Code
-  configuration (skills + agent definitions), not application code. If/when Phase 2
-  scheduling or non-skill tooling is added, this section should grow accordingly.
+- The core engine has no build step, no dependencies, and no tests — it's Claude Code
+  configuration (skills + agent definitions), not application code. The one exception is
+  the **optional PUSH add-on** (`.claude/skills/weaponx-push/`), which introduces a
+  dependency-free bash/curl/jq bridge script and two GitHub Actions workflows. These are
+  still zero-`npm`-install and are gated entirely behind config (`TELEGRAM_BOT_TOKEN` /
+  `TELEGRAM_CHAT_ID`), so they are not required by the core engine — unconfigured means off,
+  not broken. If/when further non-skill tooling is added, this section should keep growing
+  accordingly.

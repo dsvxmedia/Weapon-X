@@ -15,10 +15,13 @@ the bottom, optionally tagged with the task/date it came from.
 
 ---
 
-- `EnterWorktree` fails with "not in a git repository" in this repo as long as no
-  `origin` remote is configured (it defaults to branching from `origin/<default-branch>`).
-  Fall back to plain `git worktree add -b <branch> <path>` until a remote exists.
-  (from: smoke-test-fix-add, 2026-06-30)
+- `EnterWorktree` fails with "not in a git repository" in this repo. Originally assumed
+  this was solely because no `origin` remote existed; retested after `origin`
+  (dsvxmedia/Weapon-X) was added and the same error still occurs. The missing-remote
+  precondition was necessary but not sufficient — something else about this environment
+  also blocks it. Always fall back to plain `git worktree add -b <branch> <path>`; don't
+  assume adding a remote alone fixes this. (from: smoke-test-fix-add, 2026-06-30;
+  corrected: push-telegram-addon, 2026-07-01)
 - `gstack ship`'s PR-creation step needs a remote. Without one, Persistence should commit
   to a feature branch and leave it unmerged rather than attempting a PR — this is expected
   Phase 1 behavior pre-GitHub, not a failure. (from: smoke-test-fix-add, 2026-06-30)
