@@ -18,6 +18,8 @@ what's been learned from actually using it.
 
 ```
 .claude/skills/weaponx/              the orchestrator (the engine, portable)
+.claude/skills/weaponx-plan/         Phase 1.6: decomposes one large idea into a sequence of
+                                     bounded stages, each dispatched through weaponx unmodified
 .claude/skills/weaponx-discover/     Phase 2: finds work on its own, dispatches through weaponx
 .claude/skills/weaponx-calibrate/    Phase 1.5: checks if the evaluator has drifted
 .claude/skills/weaponx-drift/        Phase 1.5: cross-run trend/health dashboard
@@ -30,7 +32,8 @@ what's been learned from actually using it.
 .claude/agents/weaponx-evaluator.md      primary verifier (separate context from generator)
 .claude/agents/weaponx-evaluator-b.md    second, risk-framed verifier (high-stakes only)
 memory/weaponx/MEMORY.md             durable cross-task facts (instance data, kept short)
-state/weaponx/                       one structured trace file per run, plus discovery-log.md (instance data)
+state/weaponx/                       one structured trace file per run, plus discovery-log.md;
+                                     plans/ holds one file per weaponx-plan multi-stage plan (instance data)
 benchmark/weaponx/                   eval cases captured from real rejections (instance data)
 docs/specs/                          design specs (this is where the "why" lives)
 docs/examples/                       curated write-ups of real runs, kept after the raw
@@ -75,8 +78,19 @@ configured is not broken.
 ## Current phase
 
 Phase 1 (on-demand `/weaponx <task>`), Phase 1.5 (trust/drift tooling, most of it inert
-until enough run history accumulates), and Phase 2 (`weaponx-discover` — finds work on its
-own, dispatches it through the unmodified Phase 1 loop) are built. Phase 2's scheduling is
+until enough run history accumulates), Phase 1.6 (`weaponx-plan` — decomposes one large,
+open-ended idea into a dependency-ordered sequence of normal-sized stages and dispatches
+them one at a time through the unmodified Phase 1 loop), and Phase 2 (`weaponx-discover` —
+finds work on its own, dispatches it through the unmodified Phase 1 loop) are built.
+
+`weaponx-plan` is numbered **1.6** deliberately: it's not a new autonomy tier and not a
+diagnostic tool, so it doesn't belong in 1.5 or 2. It's best understood as an *extension of
+Phase 1* — it makes the same on-demand, human-initiated Phase 1 loop reachable for inputs
+that are too big to hand it directly, by decomposing them into stages that each *are* normal
+Phase 1 tasks. It adds no new autonomy (still one human approval up front, still never
+merges, still runs strictly sequentially — it is explicitly not a backdoor into Phase 3's
+parallel dispatch), which is why it sits just above Phase 1 rather than being its own major
+phase. Phase 2's scheduling is
 **not yet activated** — the skill exists but nothing is currently invoking it on a cadence;
 see its own `SKILL.md` for how to turn it on with `/loop`, and why cloud scheduling isn't
 available yet (no `origin` remote). Phase 3 (always-on/parallel dispatch across multiple
