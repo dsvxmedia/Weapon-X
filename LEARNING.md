@@ -690,3 +690,145 @@ run into. If cold-start reliability during heavy interactive-usage days matters 
 avoiding metered cost, setting `ANTHROPIC_API_KEY` as a fallback (both can coexist; the
 auth pre-flight check already prefers `CLAUDE_CODE_OAUTH_TOKEN` when both are present) would
 close this specific failure mode. Left as the operator's call, not changed unilaterally.
+
+## 2026-07-02 — Auto-update: version-check preamble + `weaponx-upgrade`, modeled on gstack
+
+The engine was just installed globally (`~/.claude/skills/weaponx*`, `~/.claude/agents/weaponx*`)
+as a plain file copy from the public `dsvxmedia/Weapon-X` repo. A plain copy has no way to learn
+it's gone stale, so a global install would silently rot while the repo moves on. gstack solves
+this with a per-skill version-check preamble plus a separate upgrade skill; Weapon X had no
+equivalent. This entry records what was built and, more importantly, the reasoning behind the
+choices that weren't forced.
+
+**Version scheme: semver (`1.0.0`), not date-based.** The version-check mechanism only needs
+local and remote to *differ* — it never asks "is remote newer", just "is it the same string" —
+so either scheme would work mechanically. The choice is therefore about human semantics, not the
+compare. The engine is versioned *configuration* whose changes are feature-shaped (a new skill, a
+changed loop rule, a fix), not calendar-shaped, and it can be edited twice in a day or not for a
+month — so a date like `2026.07.02` would imply a release cadence that doesn't exist and can't
+express "this is a breaking change to loop behavior vs. a typo fix." Semver can. `1.0.0` is the
+first version ever assigned; there was no prior convention to match, so this is a deliberate pick,
+not an inherited one.
+
+**Local version marker lives at `~/.claude/skills/weaponx-version` — one shared file, not one per
+skill.** All the `weaponx*` skills are installed and upgraded together as a single engine; they
+should never disagree about which version is installed. A marker inside each skill's own folder
+would create N independent trackers that can drift out of sync (upgrade half-completes, or someone
+hand-edits one). A single file outside any individual skill's folder is the single source of truth
+the preamble reads and the upgrade writes. It sits next to the skills (in `~/.claude/skills/`)
+rather than in `~/.gstack`-style private state so it travels with the install it describes.
+
+**The two failure philosophies are deliberately asymmetric — and this is the crux of the design.**
+- *Version check fails silently.* It runs at the top of every skill invocation as a courtesy
+  ("hey, there's a newer version"). If the network is down, the request times out, `curl` is
+  missing, or the remote `VERSION` is malformed (guarded with a dotted-numeric sanity check so a
+  404 HTML body can never be mistaken for a version), it prints nothing and the skill proceeds to
+  its real work. A courtesy notification that could block or error the actual task would be worse
+  than no notification at all. Short timeouts (`--connect-timeout 2 --max-time 4`) guarantee it
+  can never hang a skill on a slow/dead network — tested for real against an unreachable host: it
+  returned silently in ~2s.
+- *Upgrade fails loudly.* Applying an update overwrites live install files — that has real
+  consequences, so every failure is explicit and the previous working install is always left
+  intact. Silence here would be dangerous (a half-applied upgrade that looks fine until a skill
+  misbehaves later). The opposite of the check's philosophy, on purpose.
+
+**Why upgrade stages-then-atomically-swaps instead of copying in place.** A multi-file copy that
+fails partway (network dies mid-clone, disk fills) leaves a live install that's half-old,
+half-new — the worst possible state, because nothing announces it. So the upgrade does *all* the
+risky work (clone, verify a complete non-empty file set including a required floor: the core
+`weaponx` skill, both evaluator agents, a valid `VERSION`) against throwaway staging directories,
+touching nothing live until staging passes. Only then does the swap phase run, and it stages under
+the *destination's own parent* so each final move is a same-filesystem directory rename — atomic
+per item, not an interruptible copy (a cross-filesystem `mv` silently degrades to copy+delete,
+which is exactly the non-atomic behavior we're avoiding). Every replaced item is backed up and the
+backups are deleted only after *all* swaps succeed; any failure rolls every backup back. The
+version marker is written *last*, so it can never claim a version the files don't actually match.
+Clone via shallow `git clone --depth 1`, not per-file raw-content API calls — one network op that
+gets the whole tree atomically beats N calls that can each fail independently and half-populate a
+staging dir.
+
+**It copies whatever `weaponx*` exists on `main`, not a hardcoded list of six.** When this branch
+merges, `main` will carry a seventh skill (`weaponx-upgrade`) and later an eighth
+(`weaponx-plan`). A hardcoded six-skill list would silently fail to install those. Globbing
+`weaponx*` (skills) and `weaponx*.md` (agents) means the upgrade self-updates and future-proofs,
+while the required-floor check still guarantees a broken/partial upstream can't wipe a working
+install.
+
+**A real bug the atomic-swap testing caught, worth recording.** First rollback implementation only
+restored *replaced* items from backup — it didn't remove *newly-added* ones. Because
+`weaponx-upgrade` is itself a new skill (no prior version to back up), a simulated mid-swap failure
+left the new `weaponx-upgrade` file installed while everything else rolled back to the old
+version: a half-updated install, the exact thing staging is supposed to prevent. Fix: track
+fresh-adds separately and delete them on rollback. This only surfaced by *actually running* a
+mid-swap failure (made a live agent file immutable so skill swaps succeeded and an agent swap then
+failed), not by reading the logic — the reason the task insisted on a real simulated-failure test
+rather than a claim.
+
+**How it was tested (not just asserted).** Against a throwaway fake `~/.claude` (fake `skills/` +
+`agents/` dirs) and a local fake source git repo standing in for the GitHub remote (only the clone
+URL was swapped; all staging/verify/swap/rollback logic ran unmodified): (1) happy path — all
+`weaponx*` skills + both agents updated, version bumped 1.0.0->2.0.0, an unrelated `other-skill`
+left untouched, no leftover staging/backup dirs; (2) broken upstream (evaluator-b truncated to
+empty) — aborted at verification, live install byte-for-byte unchanged; (3) genuine mid-swap
+failure (immutable live agent) — full rollback, skills reverted, marker stayed 1.0.0, the
+newly-added skill removed, no leftovers. The version-check preamble was tested against a
+deliberately unreachable host (silent, ~2s, no hang) and its malformed-remote guard was exercised
+across `not-a-version`, an HTML 404 body, `1.2.3-beta`, empty, and a valid `2.0.0` (only the last
+prompts). To keep testing possible without ever touching the real global install, the upgrade
+script reads its destination from `WEAPONX_SKILLS_DIR`/`WEAPONX_AGENTS_DIR` (defaulting to
+`~/.claude/...`) — safe by default, redirectable for tests.
+
+**Scope deliberately left open:** `weaponx-plan` exists only in a separate unmerged PR and was not
+touched here; it gets the identical preamble when its own PR lands. `weaponx-upgrade`'s glob will
+install it automatically once it's on `main`, so no follow-up wiring is needed there beyond adding
+the preamble to that one file.
+
+**Cycle-2 fix — concurrency: `weaponx-upgrade` now takes an exclusive lock, and staging is
+`mktemp`-unique.** A second-cycle review (evaluator-b) caught a real race the first cut missed: the
+staging/backup names were derived from a second-granularity `date` and the staging dirs were made
+with `mkdir -p` (which is *not* exclusive). Because this repo already ships `/loop` local
+scheduling, a background-scheduled invocation and an interactive session could both enter
+`weaponx-upgrade` within the same wall-clock second, share a staging dir, collide on the same
+`.wxbak-<ts>` backup suffix for the same live path, and have one run's rollback delete/overwrite the
+other's already-completed swap — silently corrupting the global install with no error explaining
+why. Two changes, addressing two distinct failure modes:
+- *Primary — an exclusive lock.* Before it clones anything, the script does a bare
+  `mkdir "$SKILLS_DIR/.weaponx-upgrade.lock"` (no `-p`), which is atomic and exclusive on every
+  POSIX filesystem — it fails if the dir already exists — so a second invocation refuses loudly
+  (`UPGRADE FAILED: another weaponx-upgrade appears to be in progress`) instead of racing. This
+  prevents the double-run *at all*, which is the actual fix for the swap-corruption scenario (name
+  uniqueness alone would still let two runs interleave their swaps). The lock lives inside
+  `SKILLS_DIR`, so it serializes upgrades to *that* destination only — a global upgrade and a
+  separate local-project upgrade target different dirs and legitimately don't race. Released via
+  `trap 'rmdir ... ' EXIT` on **any** exit (success, handled failure, or unexpected error), so a
+  single failed/rolled-back run never leaves the system permanently locked out of upgrading — the
+  one durable-lockout risk (a hard `kill -9`/power-loss that skips the trap) is handled by telling
+  the user the exact `rmdir` to clear a stale lock in the refusal message, rather than by auto-
+  expiring a lock (which would reintroduce the race under a slow upgrade).
+- *Defense in depth — `mktemp -d` staging + a unique run id.* Staging dirs are now
+  `mktemp -d "$SKILLS_DIR/.weaponx-stage-<run>.XXXXXX"` (still under the destination's own parent,
+  so the swap is still a same-filesystem atomic rename), and backups/version-tmp use
+  `RUN="<ts>-$$"` (timestamp + PID) instead of the bare timestamp. So even if the lock were ever
+  bypassed (manual stale-lock removal, a lock dir on a different mount), two runs still can't
+  collide on a staging or backup name. (a) and (b) are kept together on purpose: (a) stops the
+  double-run, (b) stops the name collision if (a) is somehow defeated.
+- *Tested for real, not read-through.* A test copy with a `sleep` injected right after lock
+  acquisition (test-only, never in the shipped file) was launched in the background so it held the
+  lock; a second normal invocation fired while it slept and correctly **refused** (exit 1) without
+  touching the install or removing the first run's lock; the background run then completed and
+  released the lock. Lock release was confirmed on both the success path and a genuine mid-swap
+  failure (immutable live agent file via `chflags uchg` → rollback), and a fresh upgrade was run
+  *after* the failure to prove the system wasn't locked out. The original happy-path, broken-
+  upstream verify-abort, and mid-swap-rollback tests were all re-run against fake targets and still
+  pass (no regression). `bash -n` on the extracted script is clean.
+
+**Accepted risk, stated explicitly (not left implicit): no integrity check on the clone beyond
+GitHub's own branch protection.** `weaponx-upgrade` trusts whatever is on `main` at
+`dsvxmedia/Weapon-X` — it does no commit-hash pinning and no signature/tag verification; its only
+backstop is that repo's required-PR branch protection on `main` (`enforce_admins=true`, no
+force-push/deletion), which means nothing lands on `main` without a human-approved PR. This is
+accepted as reasonable **for now** because Weapon X is a personal, single-maintainer tool and the
+branch it pulls from is already human-gated. It is worth revisiting if this project ever gains
+multiple maintainers or a wider distribution model — at that point pinning to a reviewed commit/tag,
+or verifying a signature, would be the natural next control. Recorded here so the absence is a
+deliberate decision, not an oversight.
