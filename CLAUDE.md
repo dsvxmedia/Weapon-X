@@ -17,6 +17,8 @@ what's been learned from actually using it.
 ## Directory map
 
 ```
+VERSION                              single source of truth for the engine's version
+                                     (semver; see the version-check convention below)
 .claude/skills/weaponx/              the orchestrator (the engine, portable)
 .claude/skills/weaponx-plan/         Phase 1.6: decomposes one large idea into a sequence of
                                      bounded stages, each dispatched through weaponx unmodified
@@ -24,6 +26,8 @@ what's been learned from actually using it.
 .claude/skills/weaponx-calibrate/    Phase 1.5: checks if the evaluator has drifted
 .claude/skills/weaponx-drift/        Phase 1.5: cross-run trend/health dashboard
 .claude/skills/weaponx-replay/       Phase 1.5: reconstructs one run from its trace
+.claude/skills/weaponx-upgrade/      pulls latest main + atomically re-installs the engine
+                                     globally; invoked from any skill's version-check preamble
 .claude/skills/weaponx-push/         optional add-on: Telegram checkpoints + decision briefs
                                      (bash/curl/jq bridge + two GitHub Actions workflows;
                                      gated behind config, not part of the portable core)
@@ -59,6 +63,33 @@ outside the core rather than inside it: the engine must never gain a hard depend
 external service, so PUSH is gated entirely behind config — unset the two env vars and every
 PUSH step is skipped and weaponx behaves exactly as it does today. A fork without PUSH
 configured is not broken.
+
+## Versioning + auto-update convention
+
+The repo-root `VERSION` file is the single source of truth for the engine's version. It uses
+**semver** (`MAJOR.MINOR.PATCH`, first release `1.0.0`): the engine is versioned
+configuration, and its changes are feature-shaped (a new skill, a changed loop rule, a fix),
+not calendar-shaped, so semver communicates the *nature* of a change in a way a date can't.
+Bump it whenever you change engine behavior; the version-check only needs local vs. remote to
+*differ*, so any monotonic bump is enough for the mechanism, but pick the segment that matches
+the change's blast radius.
+
+Every `weaponx*` skill's `SKILL.md` opens with an identical version-check preamble (delimited
+by `WEAPONX-VERSION-CHECK-PREAMBLE` HTML comments — keep all copies byte-identical when
+editing). It reads the shared local marker `~/.claude/skills/weaponx-version` (one file all
+skills agree on, so seven skills can't drift to seven different "installed" versions),
+`curl`s the published `VERSION` from GitHub over a short-timeout unauthenticated GET, and — if
+they differ — asks the user (via AskUserQuestion) whether to run `weaponx-upgrade`. The check
+**fails silently** on any error (network, timeout, malformed remote): it is a courtesy
+notification, never a blocker.
+
+`weaponx-upgrade` is the opposite half of that asymmetry: applying an update has real
+consequences, so it **fails loudly** and never leaves a half-updated install — it clones,
+verifies a complete file set in staging, then atomically swaps each skill/agent into place
+with per-item backups and full rollback, writing the version marker last. It only ever
+touches `~/.claude/skills/weaponx*` and `~/.claude/agents/weaponx*` (or an explicitly-chosen
+local project copy) — never `memory/`, `state/`, `benchmark/`, CI, or anything it
+merges/deploys/publishes. See the 2026-07-02 LEARNING.md entry for the full rationale.
 
 ## Hard rules (do not relax these without updating LEARNING.md to explain why)
 
