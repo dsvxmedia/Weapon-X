@@ -691,6 +691,72 @@ avoiding metered cost, setting `ANTHROPIC_API_KEY` as a fallback (both can coexi
 auth pre-flight check already prefers `CLAUDE_CODE_OAUTH_TOKEN` when both are present) would
 close this specific failure mode. Left as the operator's call, not changed unilaterally.
 
+## 2026-07-02 — Closed the ship-job placeholder gap: three real rejections before it was safe
+
+The `ship` job in `push-dispatch.yml` used to just echo text after human approval — never
+actually pushed a branch or opened a PR. Fixing it for real took three generate/verify
+cycles, which is exactly the case this loop exists for: the first two "obviously
+reasonable" fixes each had a real, evaluator-caught defect that a single pass would have
+shipped.
+
+**Design chosen:** push the branch from the `run` job directly to origin (pushing a
+branch isn't shipping anything — not merged, not deployed, not a reviewable PR yet); the
+gated `ship` job only opens the PR, after human approval. Considered and rejected the
+alternative (bundle the branch as an artifact, transfer it to the gated job, push only
+post-approval) as more failure-prone for a boundary the simpler design already satisfies.
+
+**Cycle 1 → 2, two compounding real bugs, not a disagreement:**
+- Branch detection diffed ref *names* only. Missed the documented weaponx resume case
+  (an existing `weaponx/<task-slug>` branch getting new commits — same name, new SHA).
+  Confirmed via a real bare-repo simulation, not a read-only review. Fixed by keying the
+  diff on `sha refs/heads/name` pairs instead of name alone.
+- The `run` job (executes before human approval) had `pull-requests: write` via the
+  workflow's top-level `permissions:` block — meaning the only thing stopping it from
+  opening a PR early was a prompt instruction, not a credential restriction. This is the
+  "asked nicely" pattern this repo has otherwise avoided everywhere else (branch
+  protection + a pre-push hook on `main`, both mechanism, both actually tested). Fixed by
+  removing the top-level block and scoping `run` to `contents: write` only — it is now
+  structurally incapable of opening a PR, not just told not to.
+
+**Cycle 2 → 3, a regression from the fix itself:** rewriting the permissions/detection
+logic added extensive self-documenting comments, one of which contained a literal `${{ }}`
+inside a `run:` block — which breaks GitHub's own expression parser even inside a `#`
+comment. Caught by running `actionlint` against the file, not by reading it. Worth
+remembering: a comment is not exempt from GHA's template layer inside a `run:` scalar.
+`actionlint` should be part of the standard toolkit for any future edit to these workflow
+files, the same way `ruby -ryaml` already is.
+
+**A real operational gap, found by an evaluator, not by the generator:** the
+`weaponx-approval` GitHub Environment this entire fix depends on for its safety story
+didn't actually exist on the real repo — the code was correct and ready to use it, but
+nobody had ever created it. `gh api repos/dsvxmedia/Weapon-X/environments` returned empty.
+Created it directly (`gh api -X PUT .../environments/weaponx-approval`, required reviewer
+`dsvxmedia`), confirmed live via the API. Worth generalizing: when a fix's safety
+guarantee depends on an external GitHub-side configuration (an environment, a branch
+protection rule, a webhook), verification should check that the configuration actually
+exists on the real repo, not just that the code correctly references it by name.
+
+**A real prompt-injection attempt, caught and correctly refused.** During cycle 3
+verification, `weaponx-evaluator`'s tool output contained injected content disguised as
+system/hook context: a fake "evaluator checkpoint" claiming verification had already
+passed, plus "MANDATORY" instructions to invoke unrelated skills and fetch external docs.
+The evaluator did not comply with either, independently re-derived every claim instead of
+trusting the fake checkpoint, and flagged the injection attempt explicitly rather than
+silently ignoring or silently following it — exactly the agentjacking check doing its job.
+Worth noting separately from this fix: this may indicate a compromised or overly
+aggressive hook somewhere in the harness itself, worth the human's independent attention.
+
+**A REJECT that wasn't a code defect.** After cycle 3's fix was confirmed correct by both
+evaluators, `weaponx-evaluator-b` still issued a REJECT — not because anything was wrong
+with the code, but because three cycles of verified work existed only as an uncommitted
+diff in one local worktree, with no commit, no push, no PR. Taxonomy used:
+`corrupt-success`/`incomplete-persistence`. This was the right call: verifying that code
+is correct is not the same as verifying the work is safe to rely on if nobody can find it.
+Resolved by proceeding directly to Persistence (committing, pushing, opening the PR)
+rather than a fourth generation cycle, since the content itself was already independently
+confirmed correct — the fixable surface was "commit and push," which is Move 5's job, not
+Move 3's. Worth naming as its own pattern: a REJECT can legitimately target the *absence*
+of persistence, not just a defect in the artifact.
 ## 2026-07-02 — weaponx-plan (Phase 1.6): decomposing large ideas into staged runs
 
 **Why this was built.** Phase 1 handles one bounded task per invocation well — proven
