@@ -757,6 +757,91 @@ rather than a fourth generation cycle, since the content itself was already inde
 confirmed correct — the fixable surface was "commit and push," which is Move 5's job, not
 Move 3's. Worth naming as its own pattern: a REJECT can legitimately target the *absence*
 of persistence, not just a defect in the artifact.
+## 2026-07-02 — weaponx-plan (Phase 1.6): decomposing large ideas into staged runs
+
+**Why this was built.** Phase 1 handles one bounded task per invocation well — proven
+repeatedly (a LICENSE file, a retry-cap fix, the Telegram integration, a CI workflow fix all
+went through real generate/verify/reject/retry cycles). But there was no layer for taking a
+genuinely large, open-ended idea (the motivating example was "build a complex iOS app," but
+the skill is deliberately domain-agnostic) and turning it into something the loop can
+actually execute. Firing an idea that size at a single `/weaponx` call asks one 4-cycle retry
+loop to converge on what is really many tasks' worth of work, against a budget ceiling never
+sized for it. Nobody has evidence that works. `weaponx-plan` closes that gap: plan the idea
+with real planning skills, cut it into normal-sized stages, get one human sign-off, run the
+stages one at a time through the unmodified loop.
+
+**Why stage-sizing solves the budget problem instead of raising the ceiling.** The obvious
+move — "big idea needs more cycles/tool-calls, so bump `MAX_CYCLES`/`BUDGET_CEILING`" — was
+rejected. Raising the ceiling doesn't make a huge multi-part task convergeable; it just lets
+one undifferentiated loop thrash longer and spend more before failing, with no natural
+checkpoints and one giant worktree holding everything. Decomposition attacks the actual
+problem: cut the idea into stages each sized like a normal `/weaponx <task>`, and the
+*existing* per-task defaults are correct as-is for each stage. The ceiling never needed
+raising — the *unit of work* needed shrinking. Stated explicitly in the skill file because
+it's the core insight a future reader (or forker) needs to see why no raised budget number
+appears anywhere in weaponx-plan.
+
+**Why sequential, never parallel.** Phase 3 (always-on / parallel dispatch across multiple
+tasks) is explicitly not built (per the design spec and CLAUDE.md). weaponx-plan runs stages
+strictly one at a time and waits for each to pass before the next — even when two stages look
+independent. "These two don't depend on each other, so run them together" is exactly the
+Phase 3 move that's out of scope, and letting weaponx-plan make it would turn it into a quiet
+backdoor into building Phase 3. So the sequential constraint is a stated hard boundary, not an
+implementation detail. A stage failing stops the whole sequence rather than proceeding on a
+possibly-broken dependency — same fail-safe spirit as the core loop's caps.
+
+**Why exactly one approval gate, not per-stage approval.** Considered gating every stage
+individually. Rejected: per-stage approval would either (a) train the human to rubber-stamp a
+long series of prompts — approval fatigue that makes the gate meaningless, the same way a cap
+that resets on re-invocation isn't a cap — or (b) stall the semi-autonomous run into something
+no better than typing each `/weaponx` call by hand, defeating the point of decomposing once
+and letting it run. Instead there's a single load-bearing gate on the *complete assembled
+plan* (full ordered stage list + each stage's dependency reasoning), before anything
+dispatches. That's the human's whole window of control over the staged run, so the skill calls
+it out as "not allowed to be soft," mirroring how the core loop frames Verification. After the
+gate, each stage still ends at an unmerged PR/draft — approving the plan is approval to *run
+the stages*, never to *ship their output*; the never-merge boundary is untouched.
+
+**Why weaponx-plan reads trace files after the fact instead of hooking the core loop.** The
+brief allowed a minimal, justified addition to the core loop's Persistence step if
+weaponx-plan needed a hook to learn a stage's outcome. It didn't, and I strongly preferred
+not to touch the core loop — so weaponx-plan learns each stage's verdict purely by reading
+that stage's own `state/weaponx/` trace file after it completes (the final `PASS` /
+`hit-retry-cap` / `hit-budget-cap` / `escalated-on-disagreement` line). weaponx itself never
+knows it's being called as part of a plan. This keeps the five moves genuinely unmodified: a
+stage dispatched inside a plan is byte-for-byte the same run as a stage a human dispatched
+alone, with identical generator/evaluator separation, retry cap, and never-merge guarantees.
+No change was made to `weaponx/SKILL.md`, `weaponx-discover/SKILL.md`, or either evaluator
+definition. Trade-off accepted: weaponx-plan reads the outcome slightly after the fact rather
+than being handed it live — a non-issue, since it's already waiting on the stage to finish
+before it does anything with the result.
+
+**New state territory: one file per plan.** Plan-level state lives in
+`state/weaponx/plans/<plan-slug>.md`, one file per plan — not a single running log like
+`discovery-log.md`. A plan is a specific multi-stage project with its own lifecycle (starts,
+runs an ordered stage set, ends), different in kind from discovery-log's append-only stream of
+independent events. One file per plan lets live per-stage status update in place and mirrors
+how each individual run already gets its own trace file. Reasoning is written into the file's
+own header and a `plans/README.md` so it's self-documenting.
+
+**Phase numbering.** Called it Phase 1.6, not 1.5, not 2, not a new major phase. It adds no
+new autonomy (one human approval, never merges, strictly sequential — not a Phase 3 backdoor)
+and isn't diagnostic tooling (so not 1.5). It's best understood as an extension of Phase 1: it
+makes the same on-demand, human-initiated loop reachable for inputs too big to hand it
+directly. Reasoning stated inline in CLAUDE.md's "Current phase" section too.
+
+**Known limitations, flagged plainly.** (1) This cycle built and statically verified the skill
+only — it was deliberately *not* run end-to-end on a real multi-stage project (that would spend
+real budget on a task nobody asked for; a live test is a separate future step). So the logic is
+verified for internal consistency and for correctly dispatching to the real existing gstack
+planning skills (`office-hours`, `autoplan`, `plan-eng-review`) and the real weaponx skill, but
+the full plan→stages→sequential-dispatch flow has not been exercised against a live idea yet.
+(2) Resume-after-failure is intentionally a fresh human-initiated action, not automated —
+weaponx-plan stops and hands control back on any stage failure; it does not itself re-drive a
+failed stage beyond the cycle budget the core loop already spent. (3) The PUSH decision-brief
+path for the approval gate and failure notification reuses the existing bridge and inherits its
+one known open gap (no live end-to-end Telegram round-trip tested from within this skill
+specifically), same caveat already logged for PUSH itself.
 ## 2026-07-02 — Auto-update: version-check preamble + `weaponx-upgrade`, modeled on gstack
 
 The engine was just installed globally (`~/.claude/skills/weaponx*`, `~/.claude/agents/weaponx*`)
