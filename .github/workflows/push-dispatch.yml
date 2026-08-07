@@ -176,7 +176,29 @@ jobs:
           # prompt would break this YAML block scalar's indentation, so it stays on
           # one logical line — weaponx reads it fine either way.
           CONSTRAINT="IMPORTANT constraint for this specific run (cold-start CI dispatch): when you reach the Persistence move and an origin remote exists, PUSH the resulting weaponx/<task-slug> branch to origin, but do NOT open a pull request. A separate, human-approved CI job opens the PR after this run finishes. Push the branch and stop; do not run any PR-open step (skip the 'gh pr create' / PR-opening part of 'gstack ship'). If the run produces no branch or no changes, that is fine — just do not open a PR."
-          claude -p "/weaponx ${TASK} -- ${CONSTRAINT}"
+          #
+          # --allowedTools is required here, not optional polish: on an unattended
+          # runner there is no TTY to approve a permission prompt, so every write
+          # tool (Write/Edit) and every Bash call defaults to DENIED with zero
+          # error surfaced to this script — set -euo pipefail doesn't catch it
+          # because Claude Code reports the denial as part of a normal exit 0
+          # response, not a shell failure. That silently turned every real
+          # cold-start run into a corrupt-success: it looked done, but every
+          # mutating step (worktree creation, file writes, git commit) was a
+          # no-op the whole time. Confirmed by reproducing the denial locally
+          # with no flags, then confirming zero denials with this exact list
+          # (Bash/Read/Write/Edit/Grep/Glob covers file+git mutation and, tested
+          # separately, sub-agent dispatch and Skill access both work under it
+          # too — neither needs its own separate allowance). See LEARNING.md,
+          # 2026-08-07. Deliberately NOT --dangerously-skip-permissions /
+          # --permission-mode bypassPermissions: this runner has internet access
+          # (Claude Code's own help text recommends the bypass flag only for
+          # sandboxes without it), and the real containment here is GITHUB_TOKEN's
+          # narrow scope (contents: write only, no pull-requests: write) plus
+          # branch protection plus worktree isolation — not tool-approval prompts
+          # a headless run can't answer anyway. A scoped allowlist keeps that
+          # containment intact instead of discarding it.
+          claude -p "/weaponx ${TASK} -- ${CONSTRAINT}" --allowedTools "Bash,Read,Write,Edit,Grep,Glob"
 
       - name: Detect the branch weaponx pushed
         id: detect
@@ -251,20 +273,32 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STATUS: ${{ steps.weaponx.outcome }}
+          BRANCH: ${{ steps.detect.outputs.branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
-          # The ship job below only runs if this whole job succeeds (GitHub Actions'
-          # default `needs:` behavior). If the headless weaponx step failed, ship
-          # never starts at all, no approval prompt will ever follow, so the message
-          # has to say that plainly instead of the success-path wording, which used
-          # to be sent unconditionally and implied an approval step was still coming
-          # even when it never would be (found in a real audit, 2026-08-07).
-          if [ "${STATUS}" = "success" ]; then
-            TEXT="The weaponx run finished its work-and-check stage. If it produced something worth shipping, it's now waiting on your approval before I open the PR."
-          else
+          # Three distinct outcomes, three distinct messages — this step is the
+          # only unconditional notification in the run job, so it has to say
+          # what actually happens next, not just "the work stage finished":
+          #   1. weaponx itself failed — ship never starts (needs: run requires
+          #      success by default), nothing will ever be waiting on you.
+          #   2. weaponx succeeded but produced no branch — ship now has a
+          #      job-level `if: needs.run.outputs.branch != ''` (added
+          #      2026-08-07, see LEARNING.md) so it's SKIPPED entirely in this
+          #      case, not run-then-gated. Previously the "nothing to ship"
+          #      notice itself lived inside the gated ship job, meaning you had
+          #      to click Approve just to be told there was nothing to approve
+          #      — found from watching a real run sit in `waiting` for exactly
+          #      this reason.
+          #   3. weaponx succeeded and produced a branch — ship runs for real
+          #      and genuinely waits on your approval.
+          if [ "${STATUS}" != "success" ]; then
             TEXT="The weaponx run did NOT finish cleanly (result: ${STATUS}). Nothing is waiting on your approval, the ship step never starts after a failed run. Check the Actions log for what happened: ${RUN_URL}"
+          elif [ -z "${BRANCH}" ]; then
+            TEXT="The weaponx run finished cleanly but produced no branch to ship (it may have hit a retry/budget cap, or correctly found nothing needed changing). Nothing to open a PR for, nothing waiting on your approval — no action needed from you."
+          else
+            TEXT="The weaponx run finished its work-and-check stage. It's now waiting on your approval before I open the PR."
           fi
           curl -sS -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
@@ -277,8 +311,18 @@ jobs:
   # configure with themselves as a required reviewer (see SETUP.md). Until a
   # reviewer approves in the GitHub UI, this job blocks — that is the enforced,
   # not merely instructed, never-auto-ship boundary for the cold-start path.
+  #
+  # Job-level `if:` (added 2026-08-07, see LEARNING.md): GitHub's environment
+  # protection gate applies BEFORE any step in a gated job, including a step
+  # that would only send a "nothing to ship" notice. Without this guard, a run
+  # that legitimately produced nothing still parked here waiting on a human
+  # approval click just to receive that notice — observed directly on a real
+  # run. Skipping the whole job when there's no branch means that case is now
+  # a plain skip, not a pointless approval gate; the "nothing to ship" message
+  # is sent from the (ungated) run job's own notify step above instead.
   ship:
     needs: run
+    if: ${{ needs.run.outputs.branch != '' }}
     runs-on: ubuntu-latest
     environment: weaponx-approval
     permissions:
@@ -296,28 +340,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      # "Nothing to ship" case (requirement 3): weaponx ended in hit-retry-cap /
-      # hit-budget-cap, correctly determined the task was already done, or otherwise
-      # produced no branch. Don't open a garbage/empty PR — notify over Telegram and
-      # end this job cleanly. This runs FIRST so the "opening the PR" message and the
-      # gh pr create step below are skipped entirely when there's nothing to open.
-      - name: Notify — nothing to ship (no branch produced)
-        if: ${{ needs.run.outputs.branch == '' }}
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          set -euo pipefail
-          echo "The run job produced no weaponx/* branch — nothing to open a PR for."
-          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
-          curl -sS -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=The weaponx run finished but produced no branch to ship (it may have hit a retry/budget cap, or correctly found nothing needed changing). Nothing to open a PR for — no action needed from you." \
-            --data-urlencode "disable_web_page_preview=true" >/dev/null || true
-
+      # The "nothing to ship" case no longer needs a step here: the job-level
+      # `if:` above already skips this entire job when needs.run.outputs.branch
+      # is empty, and the run job's own "Notify — verification/persistence
+      # done" step sends that notice instead (see the comment there). Every
+      # step below this point only ever executes when a real branch exists,
+      # so their old per-step `if: needs.run.outputs.branch != ''` guards are
+      # now redundant with the job-level gate and have been dropped.
       - name: Notify — approved, opening PR
-        if: ${{ needs.run.outputs.branch != '' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -336,7 +366,6 @@ jobs:
       # contents are already on origin from the run job (Option A), so this job only
       # references the branch by name after a fetch — no artifact transfer needed.
       - name: Open PR against main (never merge)
-        if: ${{ needs.run.outputs.branch != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
