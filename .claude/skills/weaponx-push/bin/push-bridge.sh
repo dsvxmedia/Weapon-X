@@ -59,6 +59,14 @@ api_url() {
   printf '%s/bot%s/%s' "$API_BASE" "$TELEGRAM_BOT_TOKEN" "$1"
 }
 
+iso_to_epoch() {
+  # $1 = UTC ISO8601 timestamp, e.g. 2026-08-07T10:15:00Z. Tries GNU date
+  # first (Linux/GitHub Actions runners), falls back to BSD date (macOS).
+  local ts="$1"
+  date -u -d "$ts" +%s 2>/dev/null && return 0
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # send — POST a message to the allow-listed chat
 # ---------------------------------------------------------------------------
@@ -169,11 +177,23 @@ do_wait() {
   # If a pending file exists and carries its own timeout, honor it unless the
   # caller overrode --timeout explicitly (caller value already parsed above wins).
   local pending_file="${PENDING_DIR}/${id}.json"
+  local since_epoch="0"
   if [ -f "$pending_file" ]; then
-    local file_timeout
+    local file_timeout file_ts
     file_timeout="$(jq -r '.timeout_seconds // empty' "$pending_file" 2>/dev/null || true)"
     if [ -n "$file_timeout" ] && [ "$timeout" = "900" ]; then
       timeout="$file_timeout"
+    fi
+    # Only match a reply sent at or after this decision's brief went out — a
+    # stale unread message in the chat (e.g. a reply to an earlier decision,
+    # or a leftover message from before PUSH was working) must never be
+    # mistaken for the answer to *this* decision. Falls back to no guard
+    # (since_epoch=0) if the timestamp is missing or unparseable, matching
+    # the previous, unguarded behavior rather than failing closed.
+    file_ts="$(jq -r '.timestamp // empty' "$pending_file" 2>/dev/null || true)"
+    if [ -n "$file_ts" ]; then
+      since_epoch="$(iso_to_epoch "$file_ts" || echo 0)"
+      [ -n "$since_epoch" ] || since_epoch="0"
     fi
   fi
 
@@ -205,21 +225,22 @@ do_wait() {
       offset=$(( last_update + 1 ))
     fi
 
-    # Look only at messages from the allow-listed chat id. Any text reply from
-    # that chat is treated as the operator's answer to the current decision —
-    # Telegram plain messages don't reliably thread, so newest text from the
-    # allow-listed operator is the signal.
+    # Look only at messages from the allow-listed chat id, sent at or after
+    # this decision's brief was posted (since_epoch — see above). Any
+    # matching text reply is treated as the operator's answer to the current
+    # decision — Telegram plain messages don't reliably thread, so newest
+    # in-window text from the allow-listed operator is the signal.
     reply="$(printf '%s' "$resp" | jq -r \
-      --arg chat "${TELEGRAM_CHAT_ID}" \
-      '[.result[] | select(.message.chat.id|tostring == $chat) | select(.message.text != null)] | last | .message.text // empty')"
+      --arg chat "${TELEGRAM_CHAT_ID}" --argjson since "$since_epoch" \
+      '[.result[] | select(.message.chat.id|tostring == $chat) | select(.message.text != null) | select(.message.date >= $since)] | last | .message.text // empty')"
 
     if [ -n "$reply" ]; then
       from_chat="$(printf '%s' "$resp" | jq -r \
-        --arg chat "${TELEGRAM_CHAT_ID}" \
-        '[.result[] | select(.message.chat.id|tostring == $chat) | select(.message.text != null)] | last | .message.chat.id')"
+        --arg chat "${TELEGRAM_CHAT_ID}" --argjson since "$since_epoch" \
+        '[.result[] | select(.message.chat.id|tostring == $chat) | select(.message.text != null) | select(.message.date >= $since)] | last | .message.chat.id')"
       update_id="$(printf '%s' "$resp" | jq -r \
-        --arg chat "${TELEGRAM_CHAT_ID}" \
-        '[.result[] | select(.message.chat.id|tostring == $chat) | select(.message.text != null)] | last | .update_id')"
+        --arg chat "${TELEGRAM_CHAT_ID}" --argjson since "$since_epoch" \
+        '[.result[] | select(.message.chat.id|tostring == $chat) | select(.message.text != null) | select(.message.date >= $since)] | last | .update_id')"
 
       # Clean single-line JSON result to stdout — this is what the orchestrator watches.
       jq -c -n \

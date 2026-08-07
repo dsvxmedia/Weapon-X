@@ -129,10 +129,17 @@ and exits 2 — that is the "PUSH is off, carry on" path the orchestrator relies
 
 ## Known gaps / TODOs for the human
 
-- **Sending a real Telegram message cannot be tested without a real bot token** — the
-  script's syntax and pending-file logic are verified, but the actual round-trip needs your
-  bot. Do step 5 once to confirm the round-trip on your account.
-- **The `ship` job's PR-opening step is a documented placeholder.** The weaponx branch is
-  produced inside the `run` job's runner and is not automatically handed to the `ship` job;
-  wiring the real branch push + PR creation across jobs is left as a follow-up so the
-  human-approval gate could be wired correctly first. See the note in `push-dispatch.yml`.
+Both items previously listed here were resolved and pressure-tested for real on
+2026-08-07 (see `LEARNING.md`): the Path 1 round-trip is confirmed working end-to-end
+against a live bot, and the `ship` job's branch-push + PR-opening flow is real, not a
+placeholder (see the "Detect the branch weaponx pushed" step in `push-dispatch.yml`).
+
+One thing worth knowing, not a gap:
+
+- **Use a bot dedicated to PUSH, never one shared with another webhook-based
+  integration.** Telegram will not let a bot use `getUpdates` (what both `push-bridge.sh`
+  and `push-poll.yml` do) while it has any webhook registered — the conflict silently
+  broke both PUSH paths here for an extended period until it was diagnosed. If you ever
+  see a `Conflict: can't use getUpdates method while webhook is active` error, run
+  `deleteWebhook` against your bot token and confirm with `getWebhookInfo` that its `url`
+  field comes back empty.

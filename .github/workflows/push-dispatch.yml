@@ -22,6 +22,17 @@ on:
 
 concurrency:
   # One headless run at a time — Phase 3 (parallel dispatch) is explicitly not built.
+  #
+  # SCOPE NOTE (audited 2026-08-07): this group spans the WHOLE workflow, both
+  # jobs, not just `run`'s actual work. If `ship` is sitting blocked on the
+  # weaponx-approval human gate (which can be minutes, hours, or longer), a
+  # second /weaponx command sent from the phone in the meantime queues behind
+  # it and does not start until the first run's ship job finishes (approved
+  # or otherwise resolved) — it is not silently dropped, just serialized. This
+  # is the intended, simpler-and-safer behavior for a single-operator tool, not
+  # a bug: reviewed and kept as-is rather than narrowing the group to `run`
+  # only, which would let a second headless run start while an earlier one is
+  # still awaiting approval.
   group: push-dispatch
   cancel-in-progress: false
 
@@ -240,13 +251,25 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STATUS: ${{ steps.weaponx.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
+          # The ship job below only runs if this whole job succeeds (GitHub Actions'
+          # default `needs:` behavior). If the headless weaponx step failed, ship
+          # never starts at all, no approval prompt will ever follow, so the message
+          # has to say that plainly instead of the success-path wording, which used
+          # to be sent unconditionally and implied an approval step was still coming
+          # even when it never would be (found in a real audit, 2026-08-07).
+          if [ "${STATUS}" = "success" ]; then
+            TEXT="The weaponx run finished its work-and-check stage. If it produced something worth shipping, it's now waiting on your approval before I open the PR."
+          else
+            TEXT="The weaponx run did NOT finish cleanly (result: ${STATUS}). Nothing is waiting on your approval, the ship step never starts after a failed run. Check the Actions log for what happened: ${RUN_URL}"
+          fi
           curl -sS -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=The weaponx run finished its work-and-check stage (result: ${STATUS}). If it produced something worth shipping, it's now waiting on your approval before I open the PR." \
+            --data-urlencode "text=${TEXT}" \
             --data-urlencode "disable_web_page_preview=true" >/dev/null || true
 
   # Shipping is a SEPARATE, human-gated job. It only runs after the run job, and

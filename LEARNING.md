@@ -983,3 +983,108 @@ branch it pulls from is already human-gated. It is worth revisiting if this proj
 multiple maintainers or a wider distribution model — at that point pinning to a reviewed commit/tag,
 or verifying a signature, would be the natural next control. Recorded here so the absence is a
 deliberate decision, not an oversight.
+
+## 2026-08-07 — PUSH actually fixed: a stale n8n webhook was silently blocking both paths the whole time
+
+**The user's report was "PUSH never worked" — the real cause was a leftover webhook from an
+architecture that was replaced before PUSH ever shipped, not a bug in PUSH's own code.**
+`getWebhookInfo` on the real bot showed a live webhook at
+`https://core.theclearstate.io/webhook/weaponx-push-bot`. Telegram enforces strict mutual
+exclusivity: a bot cannot use `getUpdates` (long-poll — what both `push-bridge.sh` Path 1 and
+`push-poll.yml` Path 2 do) while any webhook is registered on it; the call fails with
+`Conflict: can't use getUpdates method while webhook is active`. That conflict was hitting both
+paths identically. A full-repo grep for n8n references (`grep -rln "n8n\|N8N" .claude .github`)
+came back empty — confirmed via `git log --all` that nothing currently in the codebase talks to
+n8n, meaning this webhook was a pure orphan from an earlier design (the 2026-07-01 PUSH entries
+above describe testing against an n8n front end) that was fully replaced by the current
+`push-poll.yml` GitHub Actions cron poller before this project's own docs caught up. **Root-cause
+fix:** `deleteWebhook` against the real bot, confirmed via `getWebhookInfo` showing an empty `url`.
+Re-verified for real immediately after: Path 1 `send`/`brief`/`wait` round-tripped with a genuine
+reply; Path 2 (`gh workflow run push-poll.yml`) came back with a clean
+"No new /weaponx command..." log line instead of the Conflict error.
+
+**A workflow reporting green in the Actions tab is not proof it did its job — this one had been
+silently failing every ~5 minutes for an extended period.** Reading a recent "successful"
+`push-poll.yml` run's actual log (`gh run view <id> --log`, not just the status column) showed the
+same Conflict error on every single scheduled run, always ending in `conclusion: success` because
+its own error handling did `echo "..." >&2; echo "dispatch=false" >> "$GITHUB_OUTPUT"; exit 0`
+regardless of what `getUpdates` actually returned. This is the load-bearing reason "PUSH never
+worked" went undetected for so long — the failure was real, frequent, and completely invisible in
+the one place (the Actions tab) an operator would normally check. Fixed below (Finding #6).
+
+**Dispatched a Fable-model audit (per explicit user instruction: "run fable to run debugging and
+permanent fixes... pressure test") to check for anything beyond the webhook itself**, kept
+read-only with no real credentials. It found 8 issues, ranked; all 8 were fixed and every fix was
+pressure-tested against the live bot and real Telegram API calls, not just read through:
+
+1. **Dead n8n credentials left in `.env`/`.env.example`** (`GH_WORKFLOW_DISPATCH_TOKEN`,
+   `N8N_HOST`, `N8N_API_KEY`) — for the n8n front end that was never actually built. Removed from
+   both files; the real values that had been sitting in `.env` are flagged here as exposed-but-
+   unused and should be rotated at their source (the GitHub PAT in GitHub's token settings, the key
+   in the n8n instance) — I have no account-level access to do that myself.
+2. **`SETUP.md`'s "Known gaps" section was stale**, claiming the Path 1 round-trip was untested and
+   the `ship` job's PR step was a placeholder — both were already resolved (the round trip was
+   proven working days ago per the 2026-07-01 entry above, and the ship-job placeholder was closed
+   per 2026-07-02's entry). Rewritten to state both as resolved and to fold in the one thing worth
+   knowing going forward: use a bot dedicated to PUSH, never one shared with another webhook
+   integration.
+3. **The `ship` job silently never runs when the headless `claude -p` step fails** (`needs: run`
+   with no `if:` override — GitHub Actions' default behavior only runs a dependent job on
+   `success`). The only message that used to fire in that case was the `run` job's own
+   `if: always()` notify step, worded for the success path only ("...it's now waiting on your
+   approval..."), which is actively misleading when nothing will ever be waiting because `ship`
+   never starts. Fixed by branching that message on `steps.weaponx.outcome`: the failure branch now
+   states plainly that nothing is pending and links straight to the Actions log. **Pressure-tested
+   live** — ran both branches of the extracted script against the real bot and confirmed two
+   distinctly-worded messages arrived on Telegram.
+4. **`push-bridge.sh`'s `do_wait()` could misattribute a stale message to the wrong decision.** It
+   already wrote a `timestamp` field into the pending JSON at `brief` time but never used it at
+   `wait` time — it just grabbed the newest text from the allow-listed chat, whatever its age. Added
+   an `iso_to_epoch()` helper (GNU-date-first, BSD-date fallback, so it works on both GitHub
+   Actions' Ubuntu runners and this machine's macOS) and a `since_epoch` guard on all three
+   `jq` filters in the poll loop, keyed off the brief's own `timestamp`. Falls back to no guard
+   (`since_epoch=0`) if the pending file or its timestamp is missing, matching the old unguarded
+   behavior rather than failing closed. **Pressure-tested live, both directions:** a pending file
+   hand-crafted with a timestamp of `2030-01-01T00:00:00Z` correctly timed out (exit 4) instead of
+   matching a real, already-sitting reply in the queue; a pending file timestamped now correctly
+   matched a fresh reply sent live to the bot immediately after.
+5. **`push-poll.yml` masked a real `getUpdates` API error as a clean success** — described above,
+   the actual mechanism behind "PUSH never worked" staying invisible. Changed the API-error branch
+   from `exit 0` to `exit 5`, while leaving the two legitimate no-op cases ("secrets not set",
+   "no new command found") as clean `exit 0`. **Pressure-tested live:** the real bot token still
+   produces a clean exit 0; a deliberately bogus token now produces
+   `Telegram getUpdates error: Unauthorized: invalid token specified` and exits 5, which would show
+   as a red run in the Actions tab instead of a silently-green one.
+6. **The `$GITHUB_OUTPUT` heredoc in `push-poll.yml` used a fixed delimiter (`PUSH_EOF`)** to carry
+   `TASK_TEXT`, which comes from an untrusted Telegram message (from the allow-listed chat, but
+   still not code the workflow authored). A message containing a line that happened to equal
+   `PUSH_EOF` could theoretically close the heredoc early and let the rest of the message be parsed
+   as forged `$GITHUB_OUTPUT` entries. Randomized per run:
+   `DELIM="PUSH_EOF_$(openssl rand -hex 8 || echo "$RANDOM$RANDOM$RANDOM")"`. **Pressure-tested
+   live:** sent a real `/weaponx pressure-test task` message to the bot and confirmed the extracted
+   poll script correctly detected it, set `dispatch=true`, and used a genuinely random delimiter
+   (`PUSH_EOF_90c0f368e766e815` on the actual test run) with correctly-formed multiline output.
+7. **`push-dispatch.yml`'s `concurrency: group: push-dispatch` spans the whole workflow**, not just
+   the `run` job's actual work — while `ship` sits blocked on the human-approval environment gate
+   (which can be a long wait), a second phone-initiated `/weaponx` command queues behind it rather
+   than starting in parallel. Reviewed and kept as-is (documented, not changed) — the right
+   behavior for a single-operator tool; narrowing the group to `run` only would let a second
+   headless run start while an earlier one is still waiting on approval, which is worse. Added an
+   explicit comment so this doesn't read as an unexamined gap later.
+8. **A Fable audit tool call accidentally matched the real `.env` file** while grepping for
+   variable names (not just `.env.example`), so its real values appeared briefly inside that
+   sub-agent's own isolated tool-output. Confirmed via `git log --all -- <path>` and
+   `git check-ignore -v` that `.env` was never committed — no public exposure — and the agent did
+   not repeat any value in its report back to this session. Treated as exposed-but-unpublished out
+   of caution; folded into item 1's rotation flag rather than tracked separately.
+
+**What "pressure-tested for real" meant here, concretely** — every fix above was exercised against
+the live Telegram API and the real bot, not just read through or unit-tested in isolation: real
+`send`/`brief`/`wait` round trips, a real bad-token API error, a real `/weaponx` message typed on a
+phone, and real hand-crafted pending files with both a future and a current timestamp. `bash -n` and
+a YAML parse check confirmed no syntax regressions in the three edited files
+(`push-bridge.sh`, `push-poll.yml`, `push-dispatch.yml`).
+
+**Left open, not evasively — genuinely deferred:** rotating the exposed n8n API key and the
+`GH_WORKFLOW_DISPATCH_TOKEN` GitHub PAT (item 1/8) requires account-level access this session
+doesn't have; the human needs to do this at the source. Everything else from the audit is closed.
