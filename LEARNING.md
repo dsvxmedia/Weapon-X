@@ -1088,3 +1088,99 @@ a YAML parse check confirmed no syntax regressions in the three edited files
 **Left open, not evasively — genuinely deferred:** rotating the exposed n8n API key and the
 `GH_WORKFLOW_DISPATCH_TOKEN` GitHub PAT (item 1/8) requires account-level access this session
 doesn't have; the human needs to do this at the source. Everything else from the audit is closed.
+
+## 2026-08-07 (cont.) — Pressure-testing the fix found a bigger bug underneath it
+
+**Merging the webhook/audit fix above and then actually running Path 2 for real — not just
+reading the code — surfaced something the audit couldn't have caught: `push-dispatch.yml`'s
+headless `claude -p` invocation had no `--allowedTools`, no `--permission-mode`, and no
+settings file.** On an unattended GitHub Actions runner there's no TTY to approve a
+permission prompt, so every `Write`/`Edit` call and every `Bash` call defaulted to **denied**
+— silently, with the run still finishing and reporting success. This is a `corrupt-success`
+pattern: the third time that exact label has shown up in this subsystem. It means every real
+cold-start (Path 2) run, going back to whenever this workflow first shipped, was very likely
+unable to do any actual work while still looking fine in the Actions tab.
+
+**How it surfaced:** after merging the webhook fix, a real end-to-end Path 2 test was run —
+sent `/weaponx pressure-test task` for real, triggered the live poll, and watched the whole
+pipeline run in GitHub Actions rather than just reading the workflow files. The run correctly
+recognized it couldn't do anything and produced no branch — no half-finished mess, just an
+honest "blocked" outcome — but its own trace laid out exactly why in detail: every mutating
+tool call was denied, `weaponx`'s own evaluator located the root cause on the exact line
+(`push-dispatch.yml:179`, the bare `claude -p "..."` call), and flagged it as an invocation
+defect rather than an ambient sandbox limitation. A caution surfaced from that run's own
+sub-agent output — that a human fixing this might reach for
+`--dangerously-skip-permissions` — was correctly treated as a red flag (instruction-shaped
+content inside sub-agent output) and passed along as a warning rather than applied. This
+matters for the fix design below.
+
+**Fix, verified empirically before touching the workflow file.** Reproduced the exact
+denial locally first: `claude -p "Write ... via Bash"` with no flags produced a
+`permission_denials` entry for `Write`. Then tested candidate allowlists directly against
+the real CLI (not guessed from memory) until one produced zero denials and an actual git
+commit: `--allowedTools "Bash,Read,Write,Edit,Grep,Glob"`. Also independently verified that
+sub-agent dispatch (needed for weaponx's Move 4 evaluator dispatch) and `Skill` tool access
+(needed for gstack skill dispatch) both work under this same list without needing their own
+separate allowance — confirmed by running both against the real CLI, not assumed.
+**Deliberately not `--dangerously-skip-permissions` / `--permission-mode bypassPermissions`**
+— per Claude Code's own `--help` text, the skip-permissions flag is "recommended only for
+sandboxes with no internet access," and this runner has internet access. The real
+containment here was already correctly identified in an earlier finding (this file,
+2026-08-07 above): `GITHUB_TOKEN` scope (`contents: write`, no `pull-requests: write`) +
+branch protection + worktree isolation — not tool-approval prompts a headless run can't
+answer anyway. An explicit allowlist keeps that containment intact instead of discarding it
+for a broad bypass.
+
+**Two more real findings from the same pressure-test run, both fixed:**
+
+- **The `ship` job's environment-approval gate applied before any step in the job — including
+  a step that only sends a "nothing to ship" notice.** Watched this directly: a run that
+  produced no branch still sat in `waiting`, requiring a human to click Approve just to
+  receive the message that there was nothing to approve. Fixed with a job-level
+  `if: ${{ needs.run.outputs.branch != '' }}` on `ship`, so it's skipped entirely rather than
+  run-then-gated when there's nothing to ship. The "nothing to ship" notice moved into the
+  `run` job's own existing (ungated) `if: always()` notify step, which now branches three
+  ways — failed run, succeeded-but-empty, succeeded-with-something — instead of two.
+- **`push-poll.yml` only ever dispatched the newest `/weaponx` command in a poll window,
+  silently dropping any older one in the same ~5-minute window.** The `jq` filter used
+  `| last`, so if two commands landed before the next poll, only the second one dispatched —
+  the first's `update_id` was still consumed by the offset advance (which runs over the whole
+  batch, not just the dispatched one), so Telegram never returns it again and nothing ever
+  notified the operator it went missing. Verified with a synthetic two-message payload before
+  changing anything, confirmed the fix with the same payload after. Now extracts every
+  matching command as a compact JSON array (oldest first) and dispatches each one in its own
+  `gh workflow run` call; `push-dispatch.yml`'s existing `concurrency: group: push-dispatch`
+  (`cancel-in-progress: false`) is what turns "dispatch all of them" into a safe queue instead
+  of parallel runs — no new queueing mechanism needed, the existing one already does this.
+
+**One candidate fix investigated and NOT applied, on purpose.** A sub-agent's finding claimed
+a failed dispatch trigger loses the offset advance, causing the same command to re-dispatch
+every 5 minutes indefinitely if GitHub's Actions cache degrades. Checked this against GitHub's
+own documented action-metadata behavior before writing any code: a `post:` action's default
+is `post-if: always()`, meaning `actions/cache@v4`'s automatic save step runs regardless of
+whether a later step in the job fails — and the offset write in `push-poll.yml` happens early,
+right after `getUpdates` succeeds, well before the failure-prone `gh workflow run` trigger
+step. So in the actual failure shape being worried about (poll succeeds, dispatch-trigger call
+fails), the offset would already be correctly written locally and would still get saved by the
+post-job hook. The claim didn't hold up under verification against primary documentation, so
+no code change was made here — fixing something that already works would just be new,
+unnecessary surface area. Recorded here so the investigation itself isn't lost, in case a
+future session re-derives the same claim and wonders whether it was already checked.
+
+**Pressure-tested for real, the same way the bug itself was found — by actually running it,
+not reading the code and declaring it fixed.** Pushed the fix branch unmerged and dispatched
+`push-dispatch.yml` directly from it (`gh workflow run push-dispatch.yml --ref
+weaponx/push-permissions-fix`) with a small, safe, well-scoped real task (a one-line
+`README.md` comment). Hit one more real, live finding along the way: the new run queued
+indefinitely behind the *previous* pressure-test run, which was still sitting unresolved in
+`ship`'s approval-pending state — direct, live confirmation of the workflow-wide concurrency
+scope this file already documented earlier today. Cancelled the stale run (it had produced
+nothing to ship, so nothing was lost) to release the slot, then watched the new run run for
+real: `Run weaponx headless` succeeded, produced an actual branch
+(`weaponx/readme-push-verified-note`), wrote a real trace file, and — critically — **`ship`
+started this time**, correctly waiting on a real human decision instead of being skipped or
+sitting on an empty one. Confirmed the actual diff: one file, one line, exactly matching the
+task; a dispatched `weaponx-evaluator` independently checked it and returned a strong PASS
+with all six done-condition claims tagged `verified`, none `asserted`. This is the first
+confirmed-for-real evidence that the Path 2 cold-start pipeline can actually do its job start
+to finish, not just report success while doing nothing.
