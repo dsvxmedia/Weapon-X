@@ -93,47 +93,45 @@ jobs:
             echo "$(( LAST + 1 ))" > .push-offset
           fi
 
-          # Find the newest message from the allow-listed chat that starts with
-          # "/weaponx ", and strip the command prefix to get the raw task text.
-          TASK="$(echo "$RESP" | jq -r \
+          # Find EVERY message from the allow-listed chat that starts with
+          # "/weaponx " in this poll window, not just the newest. Taking only
+          # `last` used to mean: if two /weaponx commands landed in the same
+          # ~5-minute poll window, the older one was silently and permanently
+          # dropped — its update_id is still covered by the offset advance
+          # above, so Telegram never returns it again, and nothing ever
+          # notified the operator it went missing. Verified by running this
+          # exact filter against a synthetic two-command payload before
+          # fixing it (see LEARNING.md, 2026-08-07). Emitted as a compact
+          # (single-line) JSON array, oldest first — jq -c guarantees no
+          # literal newlines in the output, so this is $GITHUB_OUTPUT-safe
+          # without needing a heredoc.
+          TASKS_JSON="$(echo "$RESP" | jq -c \
             --arg chat "${TELEGRAM_CHAT_ID}" '
             [ .result[]
               | select(.message.chat.id|tostring == $chat)
               | select(.message.text != null)
               | select(.message.text | startswith("/weaponx "))
-            ] | last | .message.text // empty
+              | (.message.text | sub("^/weaponx "; ""))
+            ]
           ')"
+          TASK_COUNT="$(echo "$TASKS_JSON" | jq 'length')"
 
-          if [ -z "$TASK" ]; then
+          if [ "$TASK_COUNT" -eq 0 ]; then
             echo "No new /weaponx command from the allow-listed chat this poll."
             echo "dispatch=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Strip the "/weaponx " prefix.
-          TASK_TEXT="${TASK#/weaponx }"
-          echo "Found command; will dispatch task: ${TASK_TEXT}"
-
-          # Pass the task text to the next step via output (multiline-safe).
-          # The heredoc delimiter is randomized per run rather than a fixed
-          # string: TASK_TEXT comes from a Telegram message, and a fixed
-          # delimiter could theoretically be closed early by a message
-          # containing a line that happens to match it, letting the rest of
-          # the message be parsed as forged $GITHUB_OUTPUT entries.
-          DELIM="PUSH_EOF_$(openssl rand -hex 8 2>/dev/null || echo "${RANDOM}${RANDOM}${RANDOM}")"
-          {
-            echo "dispatch=true"
-            echo "task<<${DELIM}"
-            echo "${TASK_TEXT}"
-            echo "${DELIM}"
-          } >> "$GITHUB_OUTPUT"
+          echo "Found ${TASK_COUNT} command(s) this poll; will dispatch each in order (oldest first)."
+          echo "dispatch=true" >> "$GITHUB_OUTPUT"
+          echo "tasks=${TASKS_JSON}" >> "$GITHUB_OUTPUT"
 
       - name: Trigger dispatch workflow
         if: steps.poll.outputs.dispatch == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Routed through env:, not interpolated directly into the script below.
-          # TASK_TEXT comes from a Telegram message — untrusted content, even
+          # Task text comes from a Telegram message — untrusted content, even
           # though only the allow-listed chat can send it. Direct ${{ }}
           # interpolation into a run: block is literal text substitution before
           # bash ever parses it — the classic GitHub Actions script-injection
@@ -141,10 +139,18 @@ jobs:
           # runner with this job's actions:write permissions, not just become
           # task text). env: + "$TASK_TEXT" avoids that; bash does not re-parse
           # an expanded variable's contents for further substitution.
-          TASK_TEXT: ${{ steps.poll.outputs.task }}
+          TASKS_JSON: ${{ steps.poll.outputs.tasks }}
         run: |
           set -euo pipefail
-          gh workflow run push-dispatch.yml \
-            --ref "${{ github.ref_name }}" \
-            -f task="$TASK_TEXT"
-          echo "Dispatched push-dispatch.yml with the task."
+          # Dispatch every command found this poll, oldest first. Each call
+          # triggers a separate push-dispatch.yml run; push-dispatch.yml's own
+          # `concurrency: group: push-dispatch` (cancel-in-progress: false)
+          # queues them to run one at a time rather than in parallel — that
+          # concurrency group is what turns "dispatch all of them" into a safe
+          # queue instead of N simultaneous headless runs.
+          echo "$TASKS_JSON" | jq -r '.[]' | while IFS= read -r TASK_TEXT; do
+            gh workflow run push-dispatch.yml \
+              --ref "${{ github.ref_name }}" \
+              -f task="$TASK_TEXT"
+            echo "Dispatched push-dispatch.yml with task: ${TASK_TEXT}"
+          done
