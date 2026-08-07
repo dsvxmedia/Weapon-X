@@ -74,9 +74,17 @@ jobs:
             --data-urlencode 'allowed_updates=["message"]')"
 
           if [ "$(echo "$RESP" | jq -r '.ok')" != "true" ]; then
+            # A real Telegram API error (bad token, rate limit, a webhook
+            # conflict like the one that silently broke this workflow for an
+            # extended period — see LEARNING.md, 2026-08-07) is not the same
+            # outcome as "polled fine, nothing new to dispatch". Exiting 0
+            # here made every failure look identical to success in the
+            # Actions tab; exit non-zero instead so the run shows red and is
+            # actually visible, while "secrets not set" and "no new command"
+            # below stay clean, successful exits — those are real no-ops.
             echo "Telegram getUpdates error: $(echo "$RESP" | jq -r '.description // "unknown"')" >&2
             echo "dispatch=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 5
           fi
 
           # Advance the offset past everything we fetched, so the next run starts fresh.
@@ -107,11 +115,17 @@ jobs:
           echo "Found command; will dispatch task: ${TASK_TEXT}"
 
           # Pass the task text to the next step via output (multiline-safe).
+          # The heredoc delimiter is randomized per run rather than a fixed
+          # string: TASK_TEXT comes from a Telegram message, and a fixed
+          # delimiter could theoretically be closed early by a message
+          # containing a line that happens to match it, letting the rest of
+          # the message be parsed as forged $GITHUB_OUTPUT entries.
+          DELIM="PUSH_EOF_$(openssl rand -hex 8 2>/dev/null || echo "${RANDOM}${RANDOM}${RANDOM}")"
           {
             echo "dispatch=true"
-            echo "task<<PUSH_EOF"
+            echo "task<<${DELIM}"
             echo "${TASK_TEXT}"
-            echo "PUSH_EOF"
+            echo "${DELIM}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Trigger dispatch workflow
