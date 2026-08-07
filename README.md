@@ -1,4 +1,5 @@
 # Weapon X
+<!-- PUSH permissions fix verified end-to-end 2026-08-07 -->
 
 A Claude Code challenge-loop: point it at your hardest task — software engineering,
 content/marketing, or open-ended research — and it plans, generates, verifies its own
