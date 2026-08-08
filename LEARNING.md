@@ -1284,3 +1284,5 @@ documented already in `SETUP.md`'s "accepted one-way changes" note, but worth be
 here too: anyone relying on a push notification specifically to know a decision is needed should
 know that a status-only edit won't trigger one — only a genuinely new message (like Stage 5's
 Approve/Reject brief, which IS a new message, not an edit) does.
+
+<!-- Stage 8 /cancel approval-wait pressure test 2026-08-08 -->
