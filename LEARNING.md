@@ -1340,3 +1340,24 @@ and real GitHub API, replicating the exact logic `push-poll.yml`'s new step runs
   same dependency-free approach as `push-bridge-fixtures.sh` — confirming a message from a wrong
   chat id is excluded before reaching any command branch, and that the regex boundary correctly
   distinguishes `/status` from a non-command like `/statusfoo`.
+
+## 2026-08-08 (cont.) — Stage 9, budget-crossing notice: prompt-only, honestly unverified at scale
+
+Stage 9 adds one instruction to `weaponx/SKILL.md`'s Move 4 (right after the existing PUSH
+checkpoint paragraph): when a run's self-tracked tool-call count crosses ~75% of
+`BUDGET_CEILING`'s whole-run figure (~113 of the ~150-call default), send one plain-English
+`push-bridge.sh send` heads-up — a notice, not a decision brief, sent at most once per run. No
+new code, no new enforcement — it rides the exact same self-reported tool-call counting
+`BUDGET_CEILING` itself already relies on.
+
+**Honest scope of what was actually verified this round:** per the plan's own stated
+verification limit for this stage ("no live test possible beyond confirming the instruction is
+followed in a real run that's deliberately pushed toward the threshold"), there was no run in
+this session's testing that got anywhere near ~113 tool calls — every real pressure-test
+dispatch this round was a small, single-file throwaway task. The instruction text itself was
+reviewed for internal consistency (matches `BUDGET_CEILING`'s existing wording and numbers,
+placed next to the existing PUSH checkpoint paragraph it extends, "send at most once" avoids
+repeat-spam across cycles) but its actual triggering behavior in a real long-running task remains
+unverified, exactly as the plan anticipated. Worth confirming for real the next time a genuinely
+large task runs through weaponx with PUSH configured, rather than treating this stage's PR as
+proof the notice actually fires.
