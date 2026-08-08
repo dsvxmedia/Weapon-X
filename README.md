@@ -1,4 +1,5 @@
 # Weapon X
+<!-- PUSH Stage 5 approval bridge tested end-to-end 2026-08-08 -->
 
 A Claude Code challenge-loop: point it at your hardest task — software engineering,
 content/marketing, or open-ended research — and it plans, generates, verifies its own
