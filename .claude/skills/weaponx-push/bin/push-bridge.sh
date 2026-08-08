@@ -19,9 +19,10 @@
 # a matching reply arrives, so stdout is trivially greppable for the result.
 #
 # Usage:
-#   push-bridge.sh send  --text "<message>"
+#   push-bridge.sh send  --text "<message>" [--print-message-id]
+#   push-bridge.sh edit  --message-id <id> --text "<new text>"
 #   push-bridge.sh brief --id <decision-id> --text "<brief>" \
-#                        [--option "A) ..."]... [--timeout <seconds>]
+#                        [--option "A) ..."]... [--timeout <seconds>] [--recommended <letter>]
 #   push-bridge.sh wait  --id <decision-id> [--timeout <seconds>] [--interval <seconds>]
 #
 # Exit codes:
@@ -103,6 +104,13 @@ html_escape() {
 #     text would be escaped a second time.
 # Splitting this out is what makes "escape once, at exactly one point per
 # caller" possible instead of double-escaping or leaving a gap.
+# Set by _send_raw after a successful send — the sent message's Telegram
+# message_id. A global, not stdout, so existing callers (do_brief, and
+# do_send's own plain-text contract) see zero output-shape change; only a
+# caller that explicitly reads this variable after calling opts in. Used by
+# Stage 6's live-editing to capture the message_id to thread forward.
+PUSH_LAST_MESSAGE_ID=""
+
 _send_raw() {
   local text="$1"
   local reply_markup="${2:-}"
@@ -122,13 +130,18 @@ _send_raw() {
     echo "push-bridge: Telegram API error: $(printf '%s' "$resp" | jq -r '.description // "unknown"')" >&2
     exit 5
   fi
+  PUSH_LAST_MESSAGE_ID="$(printf '%s' "$resp" | jq -r '.result.message_id')"
 }
 
 do_send() {
-  local text=""
+  local text="" print_id=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --text) text="$2"; shift 2 ;;
+      # Opt-in only — existing callers see no output-shape change unless
+      # they explicitly ask for the message_id (needed by push-dispatch.yml
+      # to thread live-editing forward; see do_edit below).
+      --print-message-id) print_id=1; shift ;;
       *) echo "push-bridge send: unknown arg '$1'" >&2; exit 3 ;;
     esac
   done
@@ -138,6 +151,67 @@ do_send() {
   fi
 
   _send_raw "$(html_escape "$text")"
+  if [ "$print_id" -eq 1 ]; then
+    printf '%s' "$PUSH_LAST_MESSAGE_ID"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# edit — update an existing message's text in place (Stage 6, live status)
+# ---------------------------------------------------------------------------
+#
+# Prints the CURRENT message_id to stdout on success — either the same one
+# passed in (a real edit or a benign "not modified" no-op), or a NEW one if
+# the edit failed and this fell back to a fresh send. Callers thread this
+# value forward for the next edit rather than assuming the id never changes.
+
+do_edit() {
+  local message_id="" text=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --message-id) message_id="$2"; shift 2 ;;
+      --text) text="$2"; shift 2 ;;
+      *) echo "push-bridge edit: unknown arg '$1'" >&2; exit 3 ;;
+    esac
+  done
+  if [ -z "$message_id" ] || [ -z "$text" ]; then
+    echo "push-bridge edit: --message-id and --text are required" >&2
+    exit 3
+  fi
+
+  local resp
+  resp="$(curl -sS -X POST "$(api_url editMessageText)" \
+    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "message_id=${message_id}" \
+    --data-urlencode "text=$(html_escape "$text")" \
+    --data-urlencode "parse_mode=HTML" \
+    --data-urlencode "disable_web_page_preview=true")" || {
+      echo "push-bridge edit: curl failed" >&2; exit 5; }
+
+  if [ "$(printf '%s' "$resp" | jq -r '.ok')" = "true" ]; then
+    printf '%s' "$message_id"
+    return 0
+  fi
+
+  local desc
+  desc="$(printf '%s' "$resp" | jq -r '.description // "unknown"')"
+  case "$desc" in
+    *"message is not modified"*)
+      # Benign no-op — the edit already reflects the desired text (e.g. two
+      # steps racing to write the same interim status). Not a failure.
+      printf '%s' "$message_id"
+      return 0
+      ;;
+  esac
+
+  # Any other edit failure (message >48h old, deleted, invalid id) falls
+  # back to a fresh send rather than losing the update — a new message is a
+  # worse UX than one live-edited thread, but a silently-dropped status
+  # update is worse still. Logged, not silent, so a pattern of fallbacks is
+  # visible rather than invisible.
+  echo "push-bridge edit: editMessageText failed ($desc), falling back to a fresh send" >&2
+  _send_raw "$(html_escape "$text")"
+  printf '%s' "$PUSH_LAST_MESSAGE_ID"
 }
 
 # ---------------------------------------------------------------------------
@@ -444,12 +518,13 @@ do_wait() {
 
 main() {
   if [ $# -lt 1 ]; then
-    echo "usage: push-bridge.sh {send|brief|wait} [args...]" >&2
+    echo "usage: push-bridge.sh {send|edit|brief|wait} [args...]" >&2
     exit 3
   fi
   local sub="$1"; shift
   case "$sub" in
     send)  require_config; do_send "$@" ;;
+    edit)  require_config; do_edit "$@" ;;
     brief) require_config; do_brief "$@" ;;
     wait)  require_config; do_wait "$@" ;;
     -h|--help|help)
