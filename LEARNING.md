@@ -1184,3 +1184,72 @@ task; a dispatched `weaponx-evaluator` independently checked it and returned a s
 with all six done-condition claims tagged `verified`, none `asserted`. This is the first
 confirmed-for-real evidence that the Path 2 cold-start pipeline can actually do its job start
 to finish, not just report success while doing nothing.
+
+## 2026-08-08 — PUSH phone-native upgrade, Stages 1-5: real bugs, one wrong plan assumption caught live
+
+Building the reviewed 10-stage PUSH expansion plan (options with a recommended pick, tap-to-choose
+buttons, and — the core ask — actually approving a `ship` job from Telegram instead of switching to
+GitHub's UI). Stages 1-4 (HTML formatting, recommended-option marking, inline keyboards, a safe
+timeout reminder) built and pressure-tested live without major surprises. Stage 5 surfaced a real,
+plan-invalidating discovery that no amount of review — CEO, Eng, DX, two outside voices — caught,
+because it's not a code defect, it's a GitHub product limitation neither model happened to know:
+
+**Fine-grained PATs cannot target a repository the token's account doesn't own.** The reviewed plan
+called for a fine-grained PAT (scoped narrowly to `Actions: Read-only` + `Deployments: Read and
+write`) minted under a dedicated, low-privilege GitHub account added as a second required reviewer
+on `weaponx-approval` — deliberately isolating a leaked-credential's blast radius to exactly this
+one repo, nothing else the primary account owns. During actual setup, the fine-grained token
+creation page never offered "Only select repositories" as an option for that dedicated account —
+looked like a stale page at first (three separate confirmations: hard refresh, re-checking the
+collaborator-invite status via `gh api`, which genuinely was accepted), but it turned out to be a
+real, documented GitHub limitation: fine-grained tokens can only select repos the token's own
+account owns, or an org it belongs to — never a repo it's merely an invited collaborator on, which
+is exactly this setup (a personal-account-owned repo, not an org). Confirmed via GitHub's own docs,
+not assumed. Made worse: GitHub's REST API docs for the specific endpoint this relies on
+(`POST .../actions/runs/{run_id}/pending_deployments`) are explicit that it requires the full
+`repo` scope on a classic token regardless — there is no narrower classic scope (`repo_deployment`
+alone was hoped for, doesn't cover it) that would have sidestepped the fine-grained limitation with
+an equivalently narrow classic one.
+
+**Real tradeoff, put back to the user rather than silently substituted.** The actual choice became:
+classic PAT (broader — full `repo` scope, not the two narrow permissions originally planned) on the
+dedicated account, or fine-grained PAT (narrow scope, as planned) back on the primary account,
+reversing the CEO-review-decided account-isolation mitigation. Presented both plainly, including
+what actually changed about the risk (broader capability *within* the one repo, versus a leak
+reaching the primary account's other repos/privileges). Chose classic PAT, dedicated account —
+account isolation judged more valuable than permission narrowness, and the repo being public with
+branch protection already blocking the truly destructive actions (merge, force-push main) regardless
+of this token's scope kept the practical downside bounded.
+
+**Pressure-tested for real, the same discipline as every fix in this file** — this is what actually
+caught the fine-grained-token dead end in the first place, not a re-read of the plan:
+- A real `push-dispatch.yml` run was dispatched, reached the `weaponx-approval` gate, and the new
+  discovery step correctly found it and posted a real Approve/Reject brief with no `--recommended`
+  marking on either option (deliberate — this is the one decision the system should never nudge).
+- A real button tap resolved and relayed through the classic PAT to GitHub's actual
+  `pending_deployments` API — confirmed not by a script claiming success, but by watching the `ship`
+  job's own status genuinely change from `waiting` to `in_progress` to `completed` in the Actions
+  tab. The run itself ended in "no diff vs main" (an unrelated, already-correctly-handled edge case
+  from a prior test's README comment already covering the same content) — the relay mechanism was
+  what was under test, and it worked.
+- A deliberately invalid token, tested against a synthetic-but-real callback payload (to avoid
+  needing another live phone tap just to exercise the failure path), produced a real `401 Bad
+  credentials` from GitHub's API, correctly surfaced as a clear Telegram message rather than a
+  silent no-op — confirmed received on the actual phone.
+- One real implementation bug caught mid-build: `jq`'s `--args` flag must come after the filter
+  string, not before, or the filter gets silently swallowed as positional data. Caught by a live
+  pressure test failure during Stage 3 (a button tap correctly posted but couldn't be matched — the
+  reply_markup itself was malformed), not by the fixture suite, which is exactly why a fixture for
+  it now exists (`push-bridge-fixtures.sh`, added this same round, covering the pure-logic pieces
+  this project has now hit this bug class in three separate times).
+
+**Architecture note carried into the code, not just this file:** Stage 5 could not reuse
+`push-bridge.sh`'s `do_wait` for the receive side, even though it already does correct
+`callback_query` matching — `do_wait` is a local, stateful long-poll loop, and running it from
+`push-poll.yml` would make it a *third* concurrent `getUpdates` consumer against the same bot token,
+the exact Path1/Path2 dual-consumer race this plan already documents as a known risk. `push-poll.yml`
+instead reuses `push-bridge.sh brief` for the send side only (already-tested inline-keyboard
+construction) and implements its own one-shot resolution check against the single `getUpdates`
+response it already fetched that tick, tracked via a new `.push-approval-seen` cloud-side cache
+(`actions/cache`, same pattern as the existing `.push-offset`) — never `do_wait`'s local `.pending`
+files, which don't exist on an ephemeral Actions runner at all.

@@ -127,6 +127,74 @@ and exits 2 — that is the "PUSH is off, carry on" path the orchestrator relies
 4. You should receive a "starting a weaponx run" Telegram message, and later a "waiting on
    your approval" message. Approve the `ship` job in the GitHub UI to proceed.
 
+## 7. Optional: Telegram-driven ship approval (skip if GitHub's own UI/Mobile is fine)
+
+Everything above (buttons, recommended-option marking, live status, diffs, phone commands,
+budget notices) works without this section. Do this only if you want to approve/reject a
+`ship` job by replying in Telegram, instead of switching to GitHub's web UI or the GitHub
+Mobile app (which already gives you a free, zero-setup native approval notification — a
+completely valid choice if you'd rather skip this section entirely).
+
+**One-time setup, ~15 minutes, plus a small recurring touch every 90 days:**
+
+1. **Create a second, dedicated GitHub account** (not your main one) — a spare email works,
+   e.g. a Gmail `+alias` (`you+approvals@gmail.com` still lands in your normal inbox, but
+   reads as a different address to GitHub). This account holds a credential capable of
+   approving deployments, kept fully isolated from your primary identity — if it ever
+   leaks, it can only ever act on this one repo, never anything else you own.
+
+2. **Add it as a collaborator** with read access:
+   ```sh
+   gh api repos/:owner/:repo/collaborators/<bot-username> -X PUT -f permission=pull
+   ```
+   Log into the new account and accept the invite at
+   `https://github.com/<owner>/<repo>/invitations`.
+
+3. **Add it as a second required reviewer** on `weaponx-approval` (alongside your primary
+   account — this does not remove the existing one; both approve independently):
+   ```sh
+   gh api -X PUT "repos/:owner/:repo/environments/weaponx-approval" \
+     -F "wait_timer=0" \
+     -F "reviewers[][type]=User" -F "reviewers[][id]=<your-user-id>" \
+     -F "reviewers[][type]=User" -F "reviewers[][id]=<bot-user-id>"
+   ```
+   (Get either user id from `gh api users/<username> --jq .id`.)
+
+4. **Generate a classic PAT for the dedicated account** — **not** a fine-grained token.
+   This was tried first and doesn't work: fine-grained tokens can only target repositories
+   the token's own account *owns* (or an org it belongs to); a repo you're merely a
+   collaborator on — which is exactly this setup — never appears as a selectable option,
+   confirmed against GitHub's own docs, not a UI bug or a stale page. GitHub's REST API
+   docs are also explicit that the specific endpoint this relies on
+   (`POST .../actions/runs/{run_id}/pending_deployments`) requires the full `repo` scope on
+   a classic token regardless — there is no narrower classic scope (e.g. `repo_deployment`
+   alone) that covers it.
+
+   While logged into the dedicated account, go to
+   `https://github.com/settings/tokens/new` (the classic token page — not
+   `/settings/personal-access-tokens/new`, which is fine-grained and won't work here):
+   - Note: something like `weaponx-approval-relay`
+   - Expiration: 90 days (you'll regenerate it under this same dedicated account when it
+     lapses — a deliberate small recurring cost, not an oversight)
+   - Scopes: check the top-level **`repo`** box
+   - Generate, copy the value (`ghp_...`) — shown once
+
+5. **Store it as the secret:**
+   ```sh
+   gh secret set WEAPONX_APPROVAL_REVIEWER_PAT --body "ghp_..."
+   ```
+
+**Kill switch:** delete this one secret at any time
+(`gh secret delete WEAPONX_APPROVAL_REVIEWER_PAT`) to instantly revert to GitHub-UI/Mobile-only
+approval — nothing else about PUSH changes or breaks.
+
+**Test it for real:** trigger a real `push-dispatch.yml` run, wait for the Approve/Reject
+brief, tap one, and confirm in the Actions tab that the `ship` job's status actually changed
+(not just that a Telegram message claimed success). If you want to test the failure path
+too: temporarily set the secret to an obviously invalid value and confirm you get a clear
+"couldn't relay, use the GitHub UI/Mobile app" message instead of silence — then set it back
+to the real token.
+
 ## Known gaps / TODOs for the human
 
 Both items previously listed here were resolved and pressure-tested for real on
