@@ -1284,3 +1284,29 @@ documented already in `SETUP.md`'s "accepted one-way changes" note, but worth be
 here too: anyone relying on a push notification specifically to know a decision is needed should
 know that a status-only edit won't trigger one — only a genuinely new message (like Stage 5's
 Approve/Reject brief, which IS a new message, not an edit) does.
+
+## 2026-08-08 (cont.) — Stage 7, diff attachment: post-escape threshold confirmed correct
+
+Stage 7 (attach the actual diff to a ship-approval brief) pressure-tested live against the real
+bot, both branches of the size-threshold decision:
+
+- A small, deliberately symbol-heavy diff (`<T>`, `a < b && b > a`, `&&`) rendered correctly
+  inline as a `<pre>` block — every special character literal, no HTML parse break, buttons
+  still present below it.
+- A large, equally symbol-dense diff (~8KB, well past the 3500-char post-escape+whole-message
+  threshold) correctly took the `sendDocument` fallback path instead: the brief arrived as a
+  normal text-only decision (no attempted-and-truncated inline block), followed by a separate
+  message carrying the diff as a `diff.diff` file attachment with a "too large to inline"
+  caption. Confirmed via a live device, not just an exit code — this is exactly the corrupt-
+  success shape (`reports fine, silently truncates/breaks`) this project has hit before, so
+  seeing the ACTUAL Telegram message layout mattered more than the script returning 0.
+
+Also resolved a genuine "how do we even compute this" question: `push-poll.yml`'s checkout is a
+shallow clone of whatever ref triggers the cron (no local history for a real `git diff` merge-
+base against a task branch that isn't even fetched). Rather than deepening the checkout and
+fetching the task branch just to run `git diff --no-color main...<branch>` locally, this uses
+GitHub's own compare API instead (`gh api -H "Accept: application/vnd.github.v3.diff"
+repos/{owner}/{repo}/compare/main...{branch}`), which returns the exact same three-dot unified
+diff without touching local git state at all. Simpler and avoids growing the checkout step's
+scope for a capability that only needs read access already covered by the workflow's existing
+`contents: read` permission.

@@ -227,15 +227,42 @@ jobs:
           UPDATED="$PRUNED"
           for RUN_ID in $(jq -r '.[]' <<<"$NEW_IDS"); do
             RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}"
+
+            # Stage 7: attach the actual diff so the human can review the
+            # real change, not just a run URL. Fetched via GitHub's own
+            # compare API (raw unified-diff media type) rather than local
+            # git commands: this checkout is shallow (fetch-depth 1, whatever
+            # this workflow's own trigger ref is), so it has neither the
+            # task branch's commits nor enough history for a three-dot
+            # merge-base diff locally. The compare API needs neither —
+            # best-effort only; a failure here degrades to the plain
+            # run-URL-only brief from before this stage, not a hard failure.
+            DIFF_FILE=".push-diff-${RUN_ID}.diff"
+            rm -f "$DIFF_FILE"
+            BRANCH="$(gh run view "$RUN_ID" --json headBranch --jq '.headBranch' 2>/dev/null || true)"
+            DIFF_ARGS=()
+            if [ -n "$BRANCH" ]; then
+              if gh api -H "Accept: application/vnd.github.v3.diff" \
+                  "repos/${{ github.repository }}/compare/main...${BRANCH}" \
+                  > "$DIFF_FILE" 2>/dev/null && [ -s "$DIFF_FILE" ]; then
+                DIFF_ARGS=(--diff-file "$DIFF_FILE")
+              else
+                echo "Could not fetch diff for run ${RUN_ID} (branch ${BRANCH:-unknown}); briefing without it." >&2
+                rm -f "$DIFF_FILE"
+              fi
+            fi
+
             if .claude/skills/weaponx-push/bin/push-bridge.sh brief \
                 --id "approve-${RUN_ID}" \
                 --text "A weaponx run is waiting on your ship approval. Review before deciding: ${RUN_URL}" \
                 --option "Approve" --option "Reject" \
-                --timeout 86400; then
+                --timeout 86400 \
+                "${DIFF_ARGS[@]}"; then
               UPDATED="$(jq -c --argjson id "$RUN_ID" '. + [$id]' <<<"$UPDATED")"
             else
               echo "Failed to post approval brief for run ${RUN_ID}, will retry next poll (not added to seen cache)." >&2
             fi
+            rm -f "$DIFF_FILE"
           done
           printf '%s' "$UPDATED" > "$SEEN"
 
