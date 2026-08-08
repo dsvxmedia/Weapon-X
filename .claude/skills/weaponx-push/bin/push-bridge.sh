@@ -105,13 +105,18 @@ html_escape() {
 # caller" possible instead of double-escaping or leaving a gap.
 _send_raw() {
   local text="$1"
+  local reply_markup="${2:-}"
   local resp
-  resp="$(curl -sS -X POST "$(api_url sendMessage)" \
+  local -a curl_args=(-sS -X POST "$(api_url sendMessage)" \
     --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
     --data-urlencode "text=${text}" \
     --data-urlencode "parse_mode=HTML" \
-    --data-urlencode "disable_web_page_preview=true")" || {
-      echo "push-bridge: curl failed" >&2; exit 5; }
+    --data-urlencode "disable_web_page_preview=true")
+  if [ -n "$reply_markup" ]; then
+    curl_args+=(--data-urlencode "reply_markup=${reply_markup}")
+  fi
+  resp="$(curl "${curl_args[@]}")" || {
+    echo "push-bridge: curl failed" >&2; exit 5; }
 
   if [ "$(printf '%s' "$resp" | jq -r '.ok')" != "true" ]; then
     echo "push-bridge: Telegram API error: $(printf '%s' "$resp" | jq -r '.description // "unknown"')" >&2
@@ -210,7 +215,35 @@ do_brief() {
   body+=$'\n\nReply with the option you want, or just tell me in your own words what to do instead.'
   body+=$'\n\n(decision id: '"$(html_escape "$id")"')'
 
-  _send_raw "$body"
+  # Inline keyboard: one tappable button per option, additive alongside the
+  # text above — typing a reply must keep working (do_wait checks both).
+  # callback_data is "<id>|<index>" (index into the options array as
+  # persisted above), never full option text — stays well under Telegram's
+  # 64-byte callback_data limit regardless of how long an option string is.
+  # Button labels are RAW option text, never html_escape'd: Telegram renders
+  # button labels as literal plain text with no HTML interpretation, so an
+  # escaped label would show a literal "&amp;" instead of "&" on the button
+  # face (see html_escape's own comment above).
+  #
+  # Omit reply_markup entirely when there are no options, rather than
+  # sending an empty inline_keyboard array — Telegram rejects/mishandles an
+  # empty keyboard, and do_brief's own contract already allows a
+  # plain checkpoint with zero options.
+  local reply_markup=""
+  if [ "${#options[@]}" -gt 0 ]; then
+    # NOTE: --args must come AFTER the filter string, not before — jq
+    # treats everything following --args as positional data, so a filter
+    # placed after it gets swallowed as data instead of parsed as the
+    # program (confirmed the hard way: this exact bug shipped once and was
+    # caught by a live pressure test, not the fixture suite, since the
+    # fixtures test matching logic on synthetic responses, not this
+    # construction step — worth remembering that gap).
+    reply_markup="$(jq -cn --arg id "$id" \
+      '{inline_keyboard: ($ARGS.positional | to_entries | map([{text: .value, callback_data: ($id + "|" + (.key|tostring))}]))}' \
+      --args "${options[@]}")"
+  fi
+
+  _send_raw "$body" "$reply_markup"
 }
 
 # ---------------------------------------------------------------------------
@@ -241,6 +274,7 @@ do_wait() {
   # caller overrode --timeout explicitly (caller value already parsed above wins).
   local pending_file="${PENDING_DIR}/${id}.json"
   local since_epoch="0"
+  local options_json="[]"
   if [ -f "$pending_file" ]; then
     local file_timeout file_ts
     file_timeout="$(jq -r '.timeout_seconds // empty' "$pending_file" 2>/dev/null || true)"
@@ -258,6 +292,10 @@ do_wait() {
       since_epoch="$(iso_to_epoch "$file_ts" || echo 0)"
       [ -n "$since_epoch" ] || since_epoch="0"
     fi
+    # Needed to resolve a button tap's index-only callback_data back to the
+    # full option text, so the JSON this function emits looks the same
+    # whether the operator typed a reply or tapped a button.
+    options_json="$(jq -c '.options // []' "$pending_file" 2>/dev/null || echo '[]')"
   fi
 
   local deadline offset resp reply from_chat update_id
@@ -268,10 +306,13 @@ do_wait() {
 
   while [ "$(date +%s)" -lt "$deadline" ]; do
     # Telegram long-poll: block up to `interval` seconds server-side per call.
+    # allowed_updates includes callback_query so a button tap on a brief's
+    # inline keyboard arrives alongside typed text replies — both are
+    # checked below in the same response, whichever matches first wins.
     resp="$(curl -sS -X POST "$(api_url getUpdates)" \
       --data-urlencode "offset=${offset}" \
       --data-urlencode "timeout=${interval}" \
-      --data-urlencode 'allowed_updates=["message"]')" || {
+      --data-urlencode 'allowed_updates=["message","callback_query"]')" || {
         echo "push-bridge wait: getUpdates curl failed, retrying..." >&2
         continue
       }
@@ -281,11 +322,65 @@ do_wait() {
       exit 5
     fi
 
-    # Advance the offset past everything we just received so we don't reprocess.
+    # Advance the offset past everything we just received so we don't
+    # reprocess — from ALL returned update ids, not just ones we act on.
+    # Same class of bug as the multi-command poll-window drop fixed
+    # elsewhere in this project: a button tap or text reply sitting
+    # alongside something we don't act on this iteration must not get
+    # silently re-delivered forever, or silently skipped by a narrower
+    # offset advance.
     local last_update
     last_update="$(printf '%s' "$resp" | jq -r '.result | (map(.update_id) | max) // empty')"
     if [ -n "$last_update" ]; then
       offset=$(( last_update + 1 ))
+    fi
+
+    # Check for a button tap first. callback_data is "<id>|<index>" (see
+    # do_brief); require the id prefix to match so a tap meant for a
+    # DIFFERENT pending decision (if more than one is outstanding) can never
+    # resolve this one. since_epoch is checked against the callback's own
+    # message.date (the brief's post time — Telegram doesn't expose a
+    # separate "tapped at" timestamp).
+    local cb_data cb_id
+    cb_data="$(printf '%s' "$resp" | jq -r \
+      --arg chat "${TELEGRAM_CHAT_ID}" --argjson since "$since_epoch" --arg idpfx "${id}|" \
+      '[.result[] | select(.callback_query != null) | select(.callback_query.message.chat.id|tostring == $chat) | select(.callback_query.message.date >= $since) | select(.callback_query.data | startswith($idpfx))] | last | .callback_query.data // empty')"
+
+    if [ -n "$cb_data" ]; then
+      cb_id="$(printf '%s' "$resp" | jq -r \
+        --arg chat "${TELEGRAM_CHAT_ID}" --argjson since "$since_epoch" --arg idpfx "${id}|" \
+        '[.result[] | select(.callback_query != null) | select(.callback_query.message.chat.id|tostring == $chat) | select(.callback_query.message.date >= $since) | select(.callback_query.data | startswith($idpfx))] | last | .callback_query.id')"
+      from_chat="$(printf '%s' "$resp" | jq -r \
+        --arg chat "${TELEGRAM_CHAT_ID}" --argjson since "$since_epoch" --arg idpfx "${id}|" \
+        '[.result[] | select(.callback_query != null) | select(.callback_query.message.chat.id|tostring == $chat) | select(.callback_query.message.date >= $since) | select(.callback_query.data | startswith($idpfx))] | last | .callback_query.message.chat.id')"
+      update_id="$(printf '%s' "$resp" | jq -r \
+        --arg chat "${TELEGRAM_CHAT_ID}" --argjson since "$since_epoch" --arg idpfx "${id}|" \
+        '[.result[] | select(.callback_query != null) | select(.callback_query.message.chat.id|tostring == $chat) | select(.callback_query.message.date >= $since) | select(.callback_query.data | startswith($idpfx))] | last | .update_id')"
+
+      # Best-effort ack so the button's loading spinner clears client-side —
+      # UX polish, not part of the resolution contract, never fatal.
+      curl -sS -X POST "$(api_url answerCallbackQuery)" \
+        --data-urlencode "callback_query_id=${cb_id}" >/dev/null 2>&1 || true
+
+      # Resolve the index-only callback_data back to the full option text
+      # via the pending file's own options array, so the emitted JSON is
+      # identical whether the operator tapped or typed.
+      local idx
+      idx="${cb_data#"${id}|"}"
+      reply="$(printf '%s' "$options_json" | jq -r --argjson i "$idx" '.[$i] // empty')"
+
+      if [ -n "$reply" ]; then
+        jq -c -n \
+          --arg id "$id" \
+          --arg reply "$reply" \
+          --argjson from_chat_id "$from_chat" \
+          --argjson update_id "$update_id" \
+          --arg source "button" \
+          '{id: $id, reply: $reply, from_chat_id: $from_chat_id, update_id: $update_id, source: $source}'
+
+        rm -f "$pending_file" 2>/dev/null || true
+        return 0
+      fi
     fi
 
     # Look only at messages from the allow-listed chat id, sent at or after
@@ -311,7 +406,8 @@ do_wait() {
         --arg reply "$reply" \
         --argjson from_chat_id "$from_chat" \
         --argjson update_id "$update_id" \
-        '{id: $id, reply: $reply, from_chat_id: $from_chat_id, update_id: $update_id}'
+        --arg source "text" \
+        '{id: $id, reply: $reply, from_chat_id: $from_chat_id, update_id: $update_id, source: $source}'
 
       # Best-effort cleanup of the pending marker.
       rm -f "$pending_file" 2>/dev/null || true
