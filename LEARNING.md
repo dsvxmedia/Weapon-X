@@ -1361,3 +1361,20 @@ repeat-spam across cycles) but its actual triggering behavior in a real long-run
 unverified, exactly as the plan anticipated. Worth confirming for real the next time a genuinely
 large task runs through weaponx with PUSH configured, rather than treating this stage's PR as
 proof the notice actually fires.
+
+## 2026-08-08 (cont.) — SETUP.md capability-status table (DX finding closed)
+
+Closes the last open finding from the plan's DX review: with all 10 stages (0 through 9) now
+landed as 9 separate sequential PRs (#16-#24) stacked on top of each other rather than one
+atomic change, a reader opening `SETUP.md` mid-rollout had no way to tell what was actually
+live versus still just described in the plan. Added a capability-status table right after the
+intro, one row per stage, naming its PR and a snapshot status — explicitly labeled as a
+snapshot, not a live view, with a pointer at `gh pr list --state merged` as the authoritative
+source once this table inevitably drifts out of date. Doc-only change; no code to pressure-test,
+verified by a straight read-through instead, per the plan's own stated verification method for
+this specific finding.
+
+With this table in place, all nine implementation-plan stages from the reviewed PUSH feature
+expansion plan (`~/.claude/plans/i-want-to-make-synthetic-dawn.md`) are now built, pressure-
+tested live, and opened as PRs (#16 through #24) — none merged, per hard rule #1; that remains
+a human decision.

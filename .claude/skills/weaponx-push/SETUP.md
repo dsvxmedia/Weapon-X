@@ -6,6 +6,35 @@ steps only if you want Telegram checkpoints and phone-driven decision briefs.
 You need to do these yourself — they require your own Telegram and GitHub accounts and
 credentials. Nothing here can be created by the agent on your behalf.
 
+## Capability status
+
+The features below (Stages 1-9 of the PUSH feature expansion) landed as separate,
+sequentially-stacked PRs rather than one atomic change, so a reader picking this doc up
+mid-rollout could otherwise be confused about what's actually live yet. This table is a
+**snapshot as of when this doc was last edited**, not a live view — it will go stale the
+moment any of these PRs merge without this table being updated in the same PR. If you need
+the current, authoritative answer, check `gh pr list --state merged --search
+"push-"` (what's actually landed on `main`) rather than trusting this table blindly.
+
+| # | Capability | Stage | PR | Status (snapshot) |
+|---|------------|-------|----|--------------------|
+| 1 | HTML-formatted messages (bold, code blocks, literal `&`/`<`/`>`) | 1 | #16 | Open, awaiting merge |
+| 2 | Recommended-option marking (★ on a brief's suggested choice) | 2 | #17 | Open, awaiting merge |
+| 3 | Tappable inline-keyboard buttons on decision briefs | 3 | #18 | Open, awaiting merge |
+| 4 | Safe timeout reminder (~60% of a brief's window, no auto-resolve ever) | 4 | #19 | Open, awaiting merge |
+| 5 | Telegram-driven ship approval (see section 7 below) | 5 | #20 | Open, awaiting merge |
+| 6 | Live-editing single status message (Path 2 cold-start only) | 6 | #21 | Open, awaiting merge |
+| 7 | Diff attached to the approval brief (inline or file, by size) | 7 | #22 | Open, awaiting merge |
+| 8 | Phone command router (`/status`, `/cancel`, `/history`) | 8 | #23 | Open, awaiting merge |
+| 9 | Budget-crossing checkpoint notice (~75% of `BUDGET_CEILING`) | 9 | #24 | Open, awaiting merge |
+
+Everything in steps 1-6 below (Telegram bot, chat id, secrets, the `weaponx-approval`
+environment, both test paths) is Stage 0's original core setup and has been live and
+pressure-tested since before this table existed — it does not depend on any row above being
+merged. Steps 1-4, 6, 8, and 9 above need nothing beyond that core setup once merged; only
+Stage 5 (row 5 — Telegram-driven ship approval, section 7 below) needs its own additional
+setup, and it's explicitly optional.
+
 ## 1. Create a Telegram bot and get its token
 
 1. In Telegram, open a chat with **@BotFather**.
