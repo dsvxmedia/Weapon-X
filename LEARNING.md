@@ -1310,3 +1310,33 @@ repos/{owner}/{repo}/compare/main...{branch}`), which returns the exact same thr
 diff without touching local git state at all. Simpler and avoids growing the checkout step's
 scope for a capability that only needs read access already covered by the workflow's existing
 `contents: read` permission.
+
+## 2026-08-08 (cont.) — Stage 8, phone command router: all three commands pressure-tested live
+
+Stage 8 (`/status`, `/history`, `/cancel <id-or-branch-substring>`) tested against the real bot
+and real GitHub API, replicating the exact logic `push-poll.yml`'s new step runs:
+
+- `/status` and `/history` both sent correctly formatted, real `gh run list` output to the real
+  chat (5 and 15 most-recent `push-dispatch.yml` runs respectively; `/history` additionally
+  counted and pointed at the 10 real trace files under `state/weaponx/` as supplementary detail,
+  per the plan's "trace files are supplementary, not primary" framing — `gh run list` would miss
+  recent activity if trace files were the primary source instead, since a trace file only exists
+  once a run has been merged back to main).
+- `/cancel` against an already-completed run correctly avoided the generic-failure trap: `gh run
+  cancel` fails with "Cannot cancel a workflow run that is completed," and rather than surfacing
+  that raw error, the code re-checks the run's actual status and replies "it's already
+  completed/success, nothing to cancel" — the specific, non-generic failure message the plan
+  required.
+- **The specific case the plan called out as not-obviously-the-same-as-normal-in-progress:**
+  `/cancel` against a run genuinely parked in the approval-wait state (`status: "waiting"`, a
+  real pending_deployment on `weaponx-approval`, not just a normal running job). Confirmed via a
+  real dispatch (run `31280094559`) caught live in that exact state: `gh run cancel` succeeded
+  (exit 0), and — checked independently via a follow-up `gh run view`, not just trusting the exit
+  code — the run's real status genuinely transitioned to `completed`/`cancelled`. `gh run cancel`
+  handles the approval-wait state the same as any other cancellable state; no special-casing was
+  needed in the router itself, but this was worth confirming directly rather than assuming.
+- The allow-listed-chat-id filter (silent, total rejection of any other chat) was verified via a
+  synthetic `getUpdates`-shaped payload run through the actual jq filter used in the workflow —
+  same dependency-free approach as `push-bridge-fixtures.sh` — confirming a message from a wrong
+  chat id is excluded before reaching any command branch, and that the regex boundary correctly
+  distinguishes `/status` from a non-command like `/statusfoo`.
