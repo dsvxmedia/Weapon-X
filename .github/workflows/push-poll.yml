@@ -394,3 +394,131 @@ jobs:
             jq -c --argjson id "$RUN_ID" '[.[] | select(. != $id)]' .push-approval-seen > .push-approval-seen.tmp
             mv .push-approval-seen.tmp .push-approval-seen
           done
+
+      # Third isolated capability block (Stage 8): a lightweight phone
+      # command router for /status, /cancel <id-or-branch-substring>, and
+      # /history. Reuses the SAME already-fetched Telegram response
+      # (.push-raw-response.json) as the /weaponx command-intake and
+      # approval-relay steps above — still the one safe cloud-side Telegram
+      # consumer (see the "single poller" comment on the Poll Telegram step
+      # above); no second getUpdates call, no second poller. Gated by the
+      # same allow-listed chat-id filter as every other PUSH command: the jq
+      # `select` below filters out any message from a different chat id
+      # before it reaches any command branch, which is what makes rejection
+      # of a non-allow-listed sender silent and total — an explicit "not
+      # authorized" reply would itself leak that the bot exists and
+      # responds to that chat.
+      - name: Phone command router (/status, /cancel, /history)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -uo pipefail
+          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
+          [ -f .push-raw-response.json ] || exit 0
+
+          RESP="$(cat .push-raw-response.json)"
+
+          reply_to_chat() {
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=$1" \
+              --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+          }
+
+          # Every command from the allow-listed chat this poll, oldest
+          # first — same "act on every match this window, not just the
+          # newest" discipline as the /weaponx command-intake step above (a
+          # second command landing in the same ~5-minute window must not be
+          # silently dropped).
+          COMMANDS_JSON="$(echo "$RESP" | jq -c \
+            --arg chat "${TELEGRAM_CHAT_ID}" '
+            [ .result[]
+              | select(.message.chat.id|tostring == $chat)
+              | select(.message.text != null)
+              | select(.message.text | test("^/(status|cancel|history)(\\s|$)"))
+              | .message.text
+            ]
+          ')"
+
+          echo "$COMMANDS_JSON" | jq -r '.[]' | while IFS= read -r CMD; do
+            case "$CMD" in
+              /status*)
+                RUNS="$(gh run list --workflow push-dispatch.yml --limit 5 \
+                  --json databaseId,status,conclusion,headBranch,createdAt \
+                  --jq '.[] | "• run \(.databaseId) — \(.headBranch) — \(if .status == "completed" then .conclusion else .status end) (\(.createdAt))"' 2>&1)"
+                if [ $? -ne 0 ]; then
+                  reply_to_chat "Couldn't fetch run status: ${RUNS}"
+                elif [ -z "$RUNS" ]; then
+                  reply_to_chat "No push-dispatch.yml runs found yet."
+                else
+                  reply_to_chat "$(printf 'Last 5 weaponx runs:\n%s' "$RUNS")"
+                fi
+                ;;
+
+              /history*)
+                RUNS="$(gh run list --workflow push-dispatch.yml --limit 15 \
+                  --json databaseId,status,conclusion,headBranch,createdAt \
+                  --jq '.[] | "• run \(.databaseId) — \(.headBranch) — \(if .status == "completed" then .conclusion else .status end) (\(.createdAt))"' 2>&1)"
+                if [ $? -ne 0 ]; then
+                  reply_to_chat "Couldn't fetch run history: ${RUNS}"
+                else
+                  # Trace files (state/weaponx/*.md) only exist for runs
+                  # that were merged back to main, so they'd MISS recent
+                  # activity if used as the primary source here — gh run
+                  # list above is the primary source; this is only a
+                  # pointer at supplementary older detail, per the plan.
+                  TRACE_NOTE=""
+                  if [ -d state/weaponx ]; then
+                    TRACE_COUNT="$(find state/weaponx -maxdepth 1 -name '*.md' ! -name 'README.md' ! -name 'discovery-log.md' | wc -l | tr -d ' ')"
+                    TRACE_NOTE="$(printf '\n\n(%s trace file(s) with full run detail also available under state/weaponx/.)' "$TRACE_COUNT")"
+                  fi
+                  reply_to_chat "$(printf 'Last 15 weaponx runs:\n%s%s' "${RUNS:-none yet}" "$TRACE_NOTE")"
+                fi
+                ;;
+
+              /cancel*)
+                ARG="$(echo "$CMD" | sed -E 's#^/cancel[[:space:]]*##')"
+                if [ -z "$ARG" ]; then
+                  reply_to_chat "Usage: /cancel <run id from /status> — e.g. /cancel 31272395710"
+                  continue
+                fi
+
+                TARGET_ID="$ARG"
+                case "$ARG" in
+                  *[!0-9]*)
+                    # Not a bare numeric run id — treat as a branch-name
+                    # substring and match the most recent push-dispatch.yml
+                    # run whose headBranch contains it.
+                    TARGET_ID="$(gh run list --workflow push-dispatch.yml --limit 20 \
+                      --json databaseId,headBranch \
+                      --jq --arg s "$ARG" '[.[] | select(.headBranch | contains($s))] | first | .databaseId // empty' 2>/dev/null)"
+                    if [ -z "$TARGET_ID" ]; then
+                      reply_to_chat "No recent run found matching '${ARG}'. Use /status to see run ids."
+                      continue
+                    fi
+                    ;;
+                esac
+
+                CANCEL_OUT="$(gh run cancel "$TARGET_ID" 2>&1)"
+                CANCEL_EXIT=$?
+                if [ "$CANCEL_EXIT" -eq 0 ]; then
+                  reply_to_chat "Cancelled run ${TARGET_ID}."
+                else
+                  # Never assume success, and never just echo a raw gh
+                  # error either — check whether the run is already done
+                  # first (the common case: a /cancel arriving after the run
+                  # finished) and say so plainly, rather than a generic
+                  # failure message that implies something went wrong.
+                  VIEW="$(gh run view "$TARGET_ID" --json status,conclusion --jq '"\(.status)/\(.conclusion // "n/a")"' 2>/dev/null)"
+                  if [ -n "$VIEW" ]; then
+                    reply_to_chat "Couldn't cancel run ${TARGET_ID} — it's already ${VIEW}, nothing to cancel."
+                  else
+                    reply_to_chat "Couldn't cancel run ${TARGET_ID}: ${CANCEL_OUT}"
+                  fi
+                fi
+                ;;
+            esac
+          done
