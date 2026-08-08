@@ -22,7 +22,8 @@
 #   push-bridge.sh send  --text "<message>" [--print-message-id]
 #   push-bridge.sh edit  --message-id <id> --text "<new text>"
 #   push-bridge.sh brief --id <decision-id> --text "<brief>" \
-#                        [--option "A) ..."]... [--timeout <seconds>] [--recommended <letter>]
+#                        [--option "A) ..."]... [--timeout <seconds>] [--recommended <letter>] \
+#                        [--diff-file <path>]
 #   push-bridge.sh wait  --id <decision-id> [--timeout <seconds>] [--interval <seconds>]
 #
 # Exit codes:
@@ -219,7 +220,7 @@ do_edit() {
 # ---------------------------------------------------------------------------
 
 do_brief() {
-  local id="" text="" timeout="900" recommended=""
+  local id="" text="" timeout="900" recommended="" diff_file=""
   local -a options=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -228,6 +229,10 @@ do_brief() {
       --option) options+=("$2"); shift 2 ;;
       --timeout) timeout="$2"; shift 2 ;;
       --recommended) recommended="$2"; shift 2 ;;
+      # Stage 7: path to a file holding a raw (unescaped) unified diff to
+      # attach to the brief. Optional — omit for a plain decision brief,
+      # unchanged from before this stage.
+      --diff-file) diff_file="$2"; shift 2 ;;
       *) echo "push-bridge brief: unknown arg '$1'" >&2; exit 3 ;;
     esac
   done
@@ -289,6 +294,28 @@ do_brief() {
   body+=$'\n\nReply with the option you want, or just tell me in your own words what to do instead.'
   body+=$'\n\n(decision id: '"$(html_escape "$id")"')'
 
+  # Stage 7: diff attachment. Escape via html_escape FIRST, then measure the
+  # threshold on the POST-ESCAPE diff COMBINED with the rest of the already-
+  # built body — never on the raw diff alone. Measuring pre-escape/diff-only
+  # understates real length: &, <, > each expand to 4-5 chars as HTML
+  # entities, and diffs are dense with exactly those characters from
+  # ordinary code (generics, comparisons, JSX, &&). A symbol-heavy diff could
+  # otherwise push the WHOLE message (options, buttons-adjacent text, all of
+  # it) past Telegram's real 4096-char sendMessage cap and break the
+  # approval flow at the exact moment this stage exists to make it more
+  # informative. 3500 leaves real margin under 4096, not a cut-it-at-the-wire
+  # threshold.
+  local send_diff_as_file=0
+  if [ -n "$diff_file" ] && [ -s "$diff_file" ]; then
+    local diff_pre
+    diff_pre=$'\n\n<pre>'"$(html_escape "$(cat "$diff_file")")"$'</pre>'
+    if [ $(( ${#body} + ${#diff_pre} )) -le 3500 ]; then
+      body+="$diff_pre"
+    else
+      send_diff_as_file=1
+    fi
+  fi
+
   # Inline keyboard: one tappable button per option, additive alongside the
   # text above — typing a reply must keep working (do_wait checks both).
   # callback_data is "<id>|<index>" (index into the options array as
@@ -318,6 +345,27 @@ do_brief() {
   fi
 
   _send_raw "$body" "$reply_markup"
+
+  # Diff was too large to inline: upload it as a separate file instead of
+  # dropping it silently. RAW (unescaped) content here on purpose — this is
+  # a downloaded .diff file, not rendered HTML, so html_escape would corrupt
+  # it (Telegram file uploads are not parse_mode text). Best-effort: if the
+  # upload itself fails (network, Telegram-side size limit), log it loudly
+  # rather than silently leaving the human with no diff and no explanation —
+  # the brief message itself already went out above regardless.
+  if [ "$send_diff_as_file" -eq 1 ]; then
+    local doc_resp
+    doc_resp="$(curl -sS -X POST "$(api_url sendDocument)" \
+      -F "chat_id=${TELEGRAM_CHAT_ID}" \
+      -F "caption=Diff too large to inline (decision id: ${id}) — attached as a file." \
+      -F "document=@${diff_file};filename=diff.diff;type=text/plain")" || {
+        echo "push-bridge brief: sendDocument curl failed, diff not delivered" >&2
+        doc_resp=""
+      }
+    if [ -n "$doc_resp" ] && [ "$(printf '%s' "$doc_resp" | jq -r '.ok')" != "true" ]; then
+      echo "push-bridge brief: sendDocument failed: $(printf '%s' "$doc_resp" | jq -r '.description // "unknown"')" >&2
+    fi
+  fi
 }
 
 # ---------------------------------------------------------------------------
