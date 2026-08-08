@@ -1253,3 +1253,34 @@ construction) and implements its own one-shot resolution check against the singl
 response it already fetched that tick, tracked via a new `.push-approval-seen` cloud-side cache
 (`actions/cache`, same pattern as the existing `.push-offset`) — never `do_wait`'s local `.pending`
 files, which don't exist on an ephemeral Actions runner at all.
+
+## 2026-08-08 (cont.) — Stage 6, live-editing: real, working, and a real UX tradeoff worth naming
+
+Stage 6 (live-editing the run-lifecycle status message instead of sending a flood of separate
+ones) pressure-tested live, full end to end, including a genuine complication that turned into
+a good confirmation: the dispatched test task's own text ("...noting 'PUSH live-editing status
+message tested end-to-end 2026-08-08'...") was itself a factual claim, and weaponx's own
+evaluator — working from a worktree based on `origin/main`, which doesn't have this unmerged
+stage's code — correctly rejected cycle 1 as `corrupt-success`: the claim wasn't true from where
+it was checking. The orchestrator recognized its own done-condition was scoped too narrowly
+(repo-wide feature existence vs. this-branch-only), re-scoped Move 4 to strong-tier reasoning
+rather than just retrying, and passed cycle 2 after confirming the actual convention (sibling
+test branches, `LEARNING.md`'s own documentation of this exact pattern) — the kind of behavior
+the whole taxonomy exists to produce. Worth recording as a positive data point, not just a
+detour: the evaluator did its job correctly on a claim about the very feature being tested.
+
+**Confirmed working, not just claimed:** the "Notify — run starting" message was genuinely
+edited by "Notify — verification/persistence done", not replaced — confirmed by the message's
+displayed timestamp in the real Telegram client matching the ORIGINAL send time (11:37 AM),
+not the edit time (~11:48 AM, per the real Actions log timestamps) — Telegram preserves a
+message's original timestamp through an edit, which is exactly the signal that distinguishes a
+genuine in-place edit from a new message that merely looks similar.
+
+**Real tradeoff surfaced, not a bug:** Telegram does not push a notification for an edited
+message the way it does for a new one. The human correctly didn't perceive an "approval needed"
+alert arriving, because — by design — nothing new arrived; the existing thread just updated
+silently. This is the accepted cost of Stage 6's whole point (fewer messages, one live thread)
+documented already in `SETUP.md`'s "accepted one-way changes" note, but worth being explicit
+here too: anyone relying on a push notification specifically to know a decision is needed should
+know that a status-only edit won't trigger one — only a genuinely new message (like Stage 5's
+Approve/Reject brief, which IS a new message, not an edit) does.
