@@ -140,7 +140,7 @@ do_send() {
 # ---------------------------------------------------------------------------
 
 do_brief() {
-  local id="" text="" timeout="900"
+  local id="" text="" timeout="900" recommended=""
   local -a options=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -148,12 +148,29 @@ do_brief() {
       --text) text="$2"; shift 2 ;;
       --option) options+=("$2"); shift 2 ;;
       --timeout) timeout="$2"; shift 2 ;;
+      --recommended) recommended="$2"; shift 2 ;;
       *) echo "push-bridge brief: unknown arg '$1'" >&2; exit 3 ;;
     esac
   done
   if [ -z "$id" ] || [ -z "$text" ]; then
     echo "push-bridge brief: --id and --text are required" >&2
     exit 3
+  fi
+
+  # --recommended must match a given --option's leading letter (e.g. "A) do
+  # X" -> letter "A"). Fail LOUD here, not gracefully — this is a caller
+  # (a SKILL.md prompt) bug, not untrusted runtime input, so surfacing it
+  # immediately is correct; silently not-highlighting would be a worse
+  # failure than an error.
+  if [ -n "$recommended" ]; then
+    local matched=0 o
+    for o in "${options[@]}"; do
+      case "$o" in "${recommended})"*) matched=1 ;; esac
+    done
+    if [ "$matched" -ne 1 ]; then
+      echo "push-bridge brief: --recommended '$recommended' matches no given --option" >&2
+      exit 3
+    fi
   fi
 
   mkdir -p "$PENDING_DIR"
@@ -182,9 +199,12 @@ do_brief() {
   body="$(html_escape "$text")"
   if [ "${#options[@]}" -gt 0 ]; then
     body+=$'\n\nOptions:'
-    local o
     for o in "${options[@]}"; do
-      body+=$'\n'"• $(html_escape "$o")"
+      local prefix=""
+      if [ -n "$recommended" ]; then
+        case "$o" in "${recommended})"*) prefix="<b>★ Recommended — </b>" ;; esac
+      fi
+      body+=$'\n'"• ${prefix}$(html_escape "$o")"
     done
   fi
   body+=$'\n\nReply with the option you want, or just tell me in your own words what to do instead.'
