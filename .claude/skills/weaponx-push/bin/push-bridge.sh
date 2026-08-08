@@ -302,9 +302,28 @@ do_wait() {
   deadline=$(( $(date +%s) + timeout ))
   offset=0
 
+  # Reminder ping at ~60% of the timeout window if still unresolved — purely
+  # additive UX (a nudge, not a resolution). Deliberately does NOT touch
+  # resolution logic at all: on a genuine final timeout, behavior is
+  # unchanged from before this stage — exit 4, pending file left in place,
+  # nothing auto-selected, ever. Silence must never be treated as approval;
+  # keeping this stage additive-only is what makes that guarantee hold by
+  # construction, not by care taken while editing this function.
+  local reminder_at reminded
+  reminder_at=$(( $(date +%s) + timeout * 60 / 100 ))
+  reminded=0
+
   echo "push-bridge wait: watching for reply to decision '${id}' (timeout ${timeout}s)..." >&2
 
   while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ "$reminded" -eq 0 ] && [ "$(date +%s)" -ge "$reminder_at" ]; then
+      curl -sS -X POST "$(api_url sendMessage)" \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "parse_mode=HTML" \
+        --data-urlencode "text=Still waiting on your reply to decision <code>$(html_escape "$id")</code>. No action taken yet — reply or tap an option when ready." \
+        --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+      reminded=1
+    fi
     # Telegram long-poll: block up to `interval` seconds server-side per call.
     # allowed_updates includes callback_query so a button tap on a brief's
     # inline keyboard arrives alongside typed text replies — both are
