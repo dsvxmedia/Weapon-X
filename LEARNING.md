@@ -1184,3 +1184,197 @@ task; a dispatched `weaponx-evaluator` independently checked it and returned a s
 with all six done-condition claims tagged `verified`, none `asserted`. This is the first
 confirmed-for-real evidence that the Path 2 cold-start pipeline can actually do its job start
 to finish, not just report success while doing nothing.
+
+## 2026-08-08 — PUSH phone-native upgrade, Stages 1-5: real bugs, one wrong plan assumption caught live
+
+Building the reviewed 10-stage PUSH expansion plan (options with a recommended pick, tap-to-choose
+buttons, and — the core ask — actually approving a `ship` job from Telegram instead of switching to
+GitHub's UI). Stages 1-4 (HTML formatting, recommended-option marking, inline keyboards, a safe
+timeout reminder) built and pressure-tested live without major surprises. Stage 5 surfaced a real,
+plan-invalidating discovery that no amount of review — CEO, Eng, DX, two outside voices — caught,
+because it's not a code defect, it's a GitHub product limitation neither model happened to know:
+
+**Fine-grained PATs cannot target a repository the token's account doesn't own.** The reviewed plan
+called for a fine-grained PAT (scoped narrowly to `Actions: Read-only` + `Deployments: Read and
+write`) minted under a dedicated, low-privilege GitHub account added as a second required reviewer
+on `weaponx-approval` — deliberately isolating a leaked-credential's blast radius to exactly this
+one repo, nothing else the primary account owns. During actual setup, the fine-grained token
+creation page never offered "Only select repositories" as an option for that dedicated account —
+looked like a stale page at first (three separate confirmations: hard refresh, re-checking the
+collaborator-invite status via `gh api`, which genuinely was accepted), but it turned out to be a
+real, documented GitHub limitation: fine-grained tokens can only select repos the token's own
+account owns, or an org it belongs to — never a repo it's merely an invited collaborator on, which
+is exactly this setup (a personal-account-owned repo, not an org). Confirmed via GitHub's own docs,
+not assumed. Made worse: GitHub's REST API docs for the specific endpoint this relies on
+(`POST .../actions/runs/{run_id}/pending_deployments`) are explicit that it requires the full
+`repo` scope on a classic token regardless — there is no narrower classic scope (`repo_deployment`
+alone was hoped for, doesn't cover it) that would have sidestepped the fine-grained limitation with
+an equivalently narrow classic one.
+
+**Real tradeoff, put back to the user rather than silently substituted.** The actual choice became:
+classic PAT (broader — full `repo` scope, not the two narrow permissions originally planned) on the
+dedicated account, or fine-grained PAT (narrow scope, as planned) back on the primary account,
+reversing the CEO-review-decided account-isolation mitigation. Presented both plainly, including
+what actually changed about the risk (broader capability *within* the one repo, versus a leak
+reaching the primary account's other repos/privileges). Chose classic PAT, dedicated account —
+account isolation judged more valuable than permission narrowness, and the repo being public with
+branch protection already blocking the truly destructive actions (merge, force-push main) regardless
+of this token's scope kept the practical downside bounded.
+
+**Pressure-tested for real, the same discipline as every fix in this file** — this is what actually
+caught the fine-grained-token dead end in the first place, not a re-read of the plan:
+- A real `push-dispatch.yml` run was dispatched, reached the `weaponx-approval` gate, and the new
+  discovery step correctly found it and posted a real Approve/Reject brief with no `--recommended`
+  marking on either option (deliberate — this is the one decision the system should never nudge).
+- A real button tap resolved and relayed through the classic PAT to GitHub's actual
+  `pending_deployments` API — confirmed not by a script claiming success, but by watching the `ship`
+  job's own status genuinely change from `waiting` to `in_progress` to `completed` in the Actions
+  tab. The run itself ended in "no diff vs main" (an unrelated, already-correctly-handled edge case
+  from a prior test's README comment already covering the same content) — the relay mechanism was
+  what was under test, and it worked.
+- A deliberately invalid token, tested against a synthetic-but-real callback payload (to avoid
+  needing another live phone tap just to exercise the failure path), produced a real `401 Bad
+  credentials` from GitHub's API, correctly surfaced as a clear Telegram message rather than a
+  silent no-op — confirmed received on the actual phone.
+- One real implementation bug caught mid-build: `jq`'s `--args` flag must come after the filter
+  string, not before, or the filter gets silently swallowed as positional data. Caught by a live
+  pressure test failure during Stage 3 (a button tap correctly posted but couldn't be matched — the
+  reply_markup itself was malformed), not by the fixture suite, which is exactly why a fixture for
+  it now exists (`push-bridge-fixtures.sh`, added this same round, covering the pure-logic pieces
+  this project has now hit this bug class in three separate times).
+
+**Architecture note carried into the code, not just this file:** Stage 5 could not reuse
+`push-bridge.sh`'s `do_wait` for the receive side, even though it already does correct
+`callback_query` matching — `do_wait` is a local, stateful long-poll loop, and running it from
+`push-poll.yml` would make it a *third* concurrent `getUpdates` consumer against the same bot token,
+the exact Path1/Path2 dual-consumer race this plan already documents as a known risk. `push-poll.yml`
+instead reuses `push-bridge.sh brief` for the send side only (already-tested inline-keyboard
+construction) and implements its own one-shot resolution check against the single `getUpdates`
+response it already fetched that tick, tracked via a new `.push-approval-seen` cloud-side cache
+(`actions/cache`, same pattern as the existing `.push-offset`) — never `do_wait`'s local `.pending`
+files, which don't exist on an ephemeral Actions runner at all.
+
+## 2026-08-08 (cont.) — Stage 6, live-editing: real, working, and a real UX tradeoff worth naming
+
+Stage 6 (live-editing the run-lifecycle status message instead of sending a flood of separate
+ones) pressure-tested live, full end to end, including a genuine complication that turned into
+a good confirmation: the dispatched test task's own text ("...noting 'PUSH live-editing status
+message tested end-to-end 2026-08-08'...") was itself a factual claim, and weaponx's own
+evaluator — working from a worktree based on `origin/main`, which doesn't have this unmerged
+stage's code — correctly rejected cycle 1 as `corrupt-success`: the claim wasn't true from where
+it was checking. The orchestrator recognized its own done-condition was scoped too narrowly
+(repo-wide feature existence vs. this-branch-only), re-scoped Move 4 to strong-tier reasoning
+rather than just retrying, and passed cycle 2 after confirming the actual convention (sibling
+test branches, `LEARNING.md`'s own documentation of this exact pattern) — the kind of behavior
+the whole taxonomy exists to produce. Worth recording as a positive data point, not just a
+detour: the evaluator did its job correctly on a claim about the very feature being tested.
+
+**Confirmed working, not just claimed:** the "Notify — run starting" message was genuinely
+edited by "Notify — verification/persistence done", not replaced — confirmed by the message's
+displayed timestamp in the real Telegram client matching the ORIGINAL send time (11:37 AM),
+not the edit time (~11:48 AM, per the real Actions log timestamps) — Telegram preserves a
+message's original timestamp through an edit, which is exactly the signal that distinguishes a
+genuine in-place edit from a new message that merely looks similar.
+
+**Real tradeoff surfaced, not a bug:** Telegram does not push a notification for an edited
+message the way it does for a new one. The human correctly didn't perceive an "approval needed"
+alert arriving, because — by design — nothing new arrived; the existing thread just updated
+silently. This is the accepted cost of Stage 6's whole point (fewer messages, one live thread)
+documented already in `SETUP.md`'s "accepted one-way changes" note, but worth being explicit
+here too: anyone relying on a push notification specifically to know a decision is needed should
+know that a status-only edit won't trigger one — only a genuinely new message (like Stage 5's
+Approve/Reject brief, which IS a new message, not an edit) does.
+
+## 2026-08-08 (cont.) — Stage 7, diff attachment: post-escape threshold confirmed correct
+
+Stage 7 (attach the actual diff to a ship-approval brief) pressure-tested live against the real
+bot, both branches of the size-threshold decision:
+
+- A small, deliberately symbol-heavy diff (`<T>`, `a < b && b > a`, `&&`) rendered correctly
+  inline as a `<pre>` block — every special character literal, no HTML parse break, buttons
+  still present below it.
+- A large, equally symbol-dense diff (~8KB, well past the 3500-char post-escape+whole-message
+  threshold) correctly took the `sendDocument` fallback path instead: the brief arrived as a
+  normal text-only decision (no attempted-and-truncated inline block), followed by a separate
+  message carrying the diff as a `diff.diff` file attachment with a "too large to inline"
+  caption. Confirmed via a live device, not just an exit code — this is exactly the corrupt-
+  success shape (`reports fine, silently truncates/breaks`) this project has hit before, so
+  seeing the ACTUAL Telegram message layout mattered more than the script returning 0.
+
+Also resolved a genuine "how do we even compute this" question: `push-poll.yml`'s checkout is a
+shallow clone of whatever ref triggers the cron (no local history for a real `git diff` merge-
+base against a task branch that isn't even fetched). Rather than deepening the checkout and
+fetching the task branch just to run `git diff --no-color main...<branch>` locally, this uses
+GitHub's own compare API instead (`gh api -H "Accept: application/vnd.github.v3.diff"
+repos/{owner}/{repo}/compare/main...{branch}`), which returns the exact same three-dot unified
+diff without touching local git state at all. Simpler and avoids growing the checkout step's
+scope for a capability that only needs read access already covered by the workflow's existing
+`contents: read` permission.
+
+## 2026-08-08 (cont.) — Stage 8, phone command router: all three commands pressure-tested live
+
+Stage 8 (`/status`, `/history`, `/cancel <id-or-branch-substring>`) tested against the real bot
+and real GitHub API, replicating the exact logic `push-poll.yml`'s new step runs:
+
+- `/status` and `/history` both sent correctly formatted, real `gh run list` output to the real
+  chat (5 and 15 most-recent `push-dispatch.yml` runs respectively; `/history` additionally
+  counted and pointed at the 10 real trace files under `state/weaponx/` as supplementary detail,
+  per the plan's "trace files are supplementary, not primary" framing — `gh run list` would miss
+  recent activity if trace files were the primary source instead, since a trace file only exists
+  once a run has been merged back to main).
+- `/cancel` against an already-completed run correctly avoided the generic-failure trap: `gh run
+  cancel` fails with "Cannot cancel a workflow run that is completed," and rather than surfacing
+  that raw error, the code re-checks the run's actual status and replies "it's already
+  completed/success, nothing to cancel" — the specific, non-generic failure message the plan
+  required.
+- **The specific case the plan called out as not-obviously-the-same-as-normal-in-progress:**
+  `/cancel` against a run genuinely parked in the approval-wait state (`status: "waiting"`, a
+  real pending_deployment on `weaponx-approval`, not just a normal running job). Confirmed via a
+  real dispatch (run `31280094559`) caught live in that exact state: `gh run cancel` succeeded
+  (exit 0), and — checked independently via a follow-up `gh run view`, not just trusting the exit
+  code — the run's real status genuinely transitioned to `completed`/`cancelled`. `gh run cancel`
+  handles the approval-wait state the same as any other cancellable state; no special-casing was
+  needed in the router itself, but this was worth confirming directly rather than assuming.
+- The allow-listed-chat-id filter (silent, total rejection of any other chat) was verified via a
+  synthetic `getUpdates`-shaped payload run through the actual jq filter used in the workflow —
+  same dependency-free approach as `push-bridge-fixtures.sh` — confirming a message from a wrong
+  chat id is excluded before reaching any command branch, and that the regex boundary correctly
+  distinguishes `/status` from a non-command like `/statusfoo`.
+
+## 2026-08-08 (cont.) — Stage 9, budget-crossing notice: prompt-only, honestly unverified at scale
+
+Stage 9 adds one instruction to `weaponx/SKILL.md`'s Move 4 (right after the existing PUSH
+checkpoint paragraph): when a run's self-tracked tool-call count crosses ~75% of
+`BUDGET_CEILING`'s whole-run figure (~113 of the ~150-call default), send one plain-English
+`push-bridge.sh send` heads-up — a notice, not a decision brief, sent at most once per run. No
+new code, no new enforcement — it rides the exact same self-reported tool-call counting
+`BUDGET_CEILING` itself already relies on.
+
+**Honest scope of what was actually verified this round:** per the plan's own stated
+verification limit for this stage ("no live test possible beyond confirming the instruction is
+followed in a real run that's deliberately pushed toward the threshold"), there was no run in
+this session's testing that got anywhere near ~113 tool calls — every real pressure-test
+dispatch this round was a small, single-file throwaway task. The instruction text itself was
+reviewed for internal consistency (matches `BUDGET_CEILING`'s existing wording and numbers,
+placed next to the existing PUSH checkpoint paragraph it extends, "send at most once" avoids
+repeat-spam across cycles) but its actual triggering behavior in a real long-running task remains
+unverified, exactly as the plan anticipated. Worth confirming for real the next time a genuinely
+large task runs through weaponx with PUSH configured, rather than treating this stage's PR as
+proof the notice actually fires.
+
+## 2026-08-08 (cont.) — SETUP.md capability-status table (DX finding closed)
+
+Closes the last open finding from the plan's DX review: with all 10 stages (0 through 9) now
+landed as 9 separate sequential PRs (#16-#24) stacked on top of each other rather than one
+atomic change, a reader opening `SETUP.md` mid-rollout had no way to tell what was actually
+live versus still just described in the plan. Added a capability-status table right after the
+intro, one row per stage, naming its PR and a snapshot status — explicitly labeled as a
+snapshot, not a live view, with a pointer at `gh pr list --state merged` as the authoritative
+source once this table inevitably drifts out of date. Doc-only change; no code to pressure-test,
+verified by a straight read-through instead, per the plan's own stated verification method for
+this specific finding.
+
+With this table in place, all nine implementation-plan stages from the reviewed PUSH feature
+expansion plan (`~/.claude/plans/i-want-to-make-synthetic-dawn.md`) are now built, pressure-
+tested live, and opened as PRs (#16 through #24) — none merged, per hard rule #1; that remains
+a human decision.

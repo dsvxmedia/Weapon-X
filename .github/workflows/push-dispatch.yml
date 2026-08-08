@@ -58,6 +58,7 @@ jobs:
     outputs:
       branch: ${{ steps.detect.outputs.branch }}      # the weaponx/* branch that was pushed, or "" if none
       head_sha: ${{ steps.detect.outputs.head_sha }}   # its tip commit, for the ship-time integrity check
+      message_id: ${{ steps.notify_starting.outputs.message_id }}  # Stage 6: threaded forward so `ship` edits the SAME message instead of sending a new one
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,6 +102,7 @@ jobs:
           echo "Baseline weaponx/* branch count: $(wc -l < "$RUNNER_TEMP/weaponx-branches-before.txt" | tr -d ' ')"
 
       - name: Notify — run starting
+        id: notify_starting
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -108,11 +110,16 @@ jobs:
         run: |
           set -euo pipefail
           [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
-          curl -sS -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=Starting a weaponx run you asked for from your phone. Task: ${TASK}. I'll message you when it needs a decision or is ready for review." \
-            --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+          # Stage 6: this is the ONE message for the whole run's lifecycle —
+          # every later Notify step below (and in the ship job) edits this
+          # same message via push-bridge.sh edit instead of sending a new
+          # one, so the chat shows one live-updating status instead of a
+          # flood of separate pings. --print-message-id is opt-in and
+          # additive; existing callers of `send` are unaffected.
+          MSG_ID="$(.claude/skills/weaponx-push/bin/push-bridge.sh send \
+            --text "Starting a weaponx run you asked for from your phone. Task: ${TASK}. I'll message you when it needs a decision or is ready for review." \
+            --print-message-id)" || true
+          echo "message_id=${MSG_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
@@ -274,10 +281,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STATUS: ${{ steps.weaponx.outcome }}
           BRANCH: ${{ steps.detect.outputs.branch }}
+          MSG_ID: ${{ steps.notify_starting.outputs.message_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
+          if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${MSG_ID}" ]; then
+            exit 0
+          fi
           # Three distinct outcomes, three distinct messages — this step is the
           # only unconditional notification in the run job, so it has to say
           # what actually happens next, not just "the work stage finished":
@@ -300,11 +310,12 @@ jobs:
           else
             TEXT="The weaponx run finished its work-and-check stage. It's now waiting on your approval before I open the PR."
           fi
-          curl -sS -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=${TEXT}" \
-            --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+          # Stage 6: edit the SAME message from "Notify — run starting" rather
+          # than sending a new one. do_edit prints the (possibly-changed, if
+          # the edit fell back to a fresh send) message_id — captured here so
+          # later steps in THIS job could thread it further, though none do
+          # today since this is the run job's last notify step.
+          .claude/skills/weaponx-push/bin/push-bridge.sh edit --message-id "${MSG_ID}" --text "${TEXT}" >/dev/null || true
 
   # Shipping is a SEPARATE, human-gated job. It only runs after the run job, and
   # it depends on the `weaponx-approval` GitHub Environment, which a human must
@@ -334,6 +345,9 @@ jobs:
     env:
       WEAPONX_BRANCH: ${{ needs.run.outputs.branch }}
       WEAPONX_HEAD_SHA: ${{ needs.run.outputs.head_sha }}
+      # Stage 6: threaded from the run job's first message so this whole job
+      # keeps editing that SAME message instead of starting a new thread.
+      WEAPONX_MSG_ID: ${{ needs.run.outputs.message_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -353,12 +367,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -euo pipefail
-          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
-          curl -sS -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=You approved the weaponx run. Opening the PR now — it still stops at an open PR for you to merge; nothing auto-merges." \
-            --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+          if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${WEAPONX_MSG_ID}" ]; then
+            exit 0
+          fi
+          .claude/skills/weaponx-push/bin/push-bridge.sh edit --message-id "${WEAPONX_MSG_ID}" \
+            --text "You approved the weaponx run. Opening the PR now — it still stops at an open PR for you to merge; nothing auto-merges." >/dev/null || true
 
       # Open the PR — and ONLY open it. This is the terminal state: base main, from
       # the branch weaponx already pushed to origin. It must never merge (matching
@@ -379,12 +392,9 @@ jobs:
           # against it (guards against a stale/rewritten ref between jobs).
           if ! git ls-remote --exit-code --heads origin "refs/heads/${WEAPONX_BRANCH}" >/dev/null 2>&1; then
             echo "::error::Expected branch '${WEAPONX_BRANCH}' not found on origin at ship time." >&2
-            if [ -n "${TELEGRAM_BOT_TOKEN}" ]; then
-              curl -sS -X POST \
-                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-                --data-urlencode "text=Tried to open the PR after your approval, but the weaponx branch was no longer on origin. Nothing was merged; please check the Actions log." \
-                --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+            if [ -n "${TELEGRAM_BOT_TOKEN}" ] && [ -n "${WEAPONX_MSG_ID}" ]; then
+              .claude/skills/weaponx-push/bin/push-bridge.sh edit --message-id "${WEAPONX_MSG_ID}" \
+                --text "Tried to open the PR after your approval, but the weaponx branch was no longer on origin. Nothing was merged; please check the Actions log." >/dev/null || true
             fi
             exit 1
           fi
@@ -421,21 +431,15 @@ jobs:
 
           if [ -z "${PR_URL}" ]; then
             echo "::warning::Branch ${WEAPONX_BRANCH} exists but no PR could be opened (likely no diff vs main)."
-            if [ -n "${TELEGRAM_BOT_TOKEN}" ]; then
-              curl -sS -X POST \
-                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-                --data-urlencode "text=Approved, but the weaponx branch had no changes to open a PR from (no diff vs main). Nothing merged; nothing to review." \
-                --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+            if [ -n "${TELEGRAM_BOT_TOKEN}" ] && [ -n "${WEAPONX_MSG_ID}" ]; then
+              .claude/skills/weaponx-push/bin/push-bridge.sh edit --message-id "${WEAPONX_MSG_ID}" \
+                --text "Approved, but the weaponx branch had no changes to open a PR from (no diff vs main). Nothing merged; nothing to review." >/dev/null || true
             fi
             exit 0
           fi
 
           echo "Opened (unmerged) PR: ${PR_URL}"
-          if [ -n "${TELEGRAM_BOT_TOKEN}" ]; then
-            curl -sS -X POST \
-              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-              --data-urlencode "text=PR is open and waiting for your review: ${PR_URL} — it is NOT merged. Review and merge it yourself when ready." \
-              --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+          if [ -n "${TELEGRAM_BOT_TOKEN}" ] && [ -n "${WEAPONX_MSG_ID}" ]; then
+            .claude/skills/weaponx-push/bin/push-bridge.sh edit --message-id "${WEAPONX_MSG_ID}" \
+              --text "PR is open and waiting for your review: ${PR_URL} — it is NOT merged. Review and merge it yourself when ready." >/dev/null || true
           fi

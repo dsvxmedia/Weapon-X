@@ -215,6 +215,18 @@ checkpoint (`push-bridge.sh brief` with 2-4 options plus the free-text path, the
 configured, the bridge exits with a "skipping" status and the loop proceeds exactly as it
 does today — PUSH is never a dependency here.
 
+**Optional — PUSH budget-crossing notice (only if configured):** if PUSH is configured and
+this run's self-tracked tool-call count crosses ~75% of `BUDGET_CEILING`'s whole-run figure
+(~113 of the ~150-call default) at any point during Move 3 or Move 4, send one heads-up via
+`push-bridge.sh send --text "<checkpoint>"` noting the run is approaching its budget ceiling
+and roughly what's left to do — a plain notice, not a decision brief; the loop keeps running
+exactly as it would without PUSH, this is visibility, not a new gate. Send it at most once
+per run — don't repeat it on every subsequent cycle once it's gone out. This rides the same
+self-reported tool-call tracking `BUDGET_CEILING` itself already uses, honestly: exactly as
+reliable, and exactly as un-enforced, as today's existing budget tracking — no new counting
+mechanism, no new enforcement mechanism, just one more instruction riding the same trust
+model the rest of this loop already runs on.
+
 ## Move 5 — Persistence
 
 Write one structured trace record to `state/weaponx/<task-slug>-<timestamp>.md`. Lead with

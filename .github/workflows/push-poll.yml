@@ -48,6 +48,18 @@ jobs:
           restore-keys: |
             push-telegram-offset-
 
+      # Tracks which push-dispatch.yml run ids have already had an approval
+      # brief posted, so a still-unresolved decision isn't re-briefed every
+      # 5-minute tick. Same actions/cache pattern as the offset above.
+      - name: Restore approval-seen cache
+        id: approval-seen-cache
+        uses: actions/cache@v4
+        with:
+          path: .push-approval-seen
+          key: push-approval-seen-${{ github.run_id }}
+          restore-keys: |
+            push-approval-seen-
+
       - name: Poll Telegram for new /weaponx commands
         id: poll
         env:
@@ -67,11 +79,23 @@ jobs:
             OFFSET="$(cat .push-offset)"
           fi
 
+          # callback_query added (Stage 5) — this is the ONE safe cloud-side
+          # Telegram consumer (see LEARNING.md / plan: Telegram's getUpdates
+          # offset is global per bot token, so every cloud-side capability
+          # that reacts to Telegram input, present and future, MUST route
+          # through this single poller rather than starting a second one.
+          # Do not add a second concurrent getUpdates consumer here.
           RESP="$(curl -sS -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates" \
             --data-urlencode "offset=${OFFSET}" \
             --data-urlencode "timeout=0" \
-            --data-urlencode 'allowed_updates=["message"]')"
+            --data-urlencode 'allowed_updates=["message","callback_query"]')"
+
+          # Persisted to a file (not $GITHUB_OUTPUT — could be large) so the
+          # approval-relay step below can react to the SAME fetched batch
+          # without a second getUpdates call, which would burn this run's
+          # single legitimate poll on duplicate API traffic.
+          printf '%s' "$RESP" > .push-raw-response.json
 
           if [ "$(echo "$RESP" | jq -r '.ok')" != "true" ]; then
             # A real Telegram API error (bad token, rate limit, a webhook
@@ -153,4 +177,348 @@ jobs:
               --ref "${{ github.ref_name }}" \
               -f task="$TASK_TEXT"
             echo "Dispatched push-dispatch.yml with task: ${TASK_TEXT}"
+          done
+
+      # Isolated capability block (Stage 5): a failure here (e.g. `gh run
+      # list` erroring) must never abort the /weaponx command-intake logic
+      # above, or the relay step below — `if: always()` plus its own
+      # internal error handling (no bare `set -euo pipefail` propagating a
+      # transient failure into a hard step failure) is what keeps these
+      # capabilities independent within the one poll step this design
+      # requires (Telegram's global getUpdates offset means there can only
+      # be one cloud-side consumer).
+      - name: Discover and brief new approval-pending runs
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -uo pipefail
+          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
+
+          WAITING_IDS="$(gh run list --workflow push-dispatch.yml --json databaseId,status --jq \
+            '[.[] | select(.status=="waiting") | .databaseId] | sort' 2>&1)"
+          if [ $? -ne 0 ]; then
+            echo "gh run list failed, skipping this poll's approval discovery (isolated — command-intake above is unaffected): $WAITING_IDS" >&2
+            exit 0
+          fi
+
+          SEEN=".push-approval-seen"
+          [ -f "$SEEN" ] || echo '[]' > "$SEEN"
+          SEEN_IDS="$(cat "$SEEN")"
+
+          # Prune: drop any previously-seen run id no longer in the current
+          # waiting set (resolved via Telegram or directly via the GitHub
+          # UI/Mobile fallback — either way, stop tracking it). This is also
+          # what keeps the cache from growing without bound.
+          PRUNED="$(jq -c --argjson waiting "$WAITING_IDS" '[.[] | select(. as $id | $waiting | index($id))]' <<<"$SEEN_IDS")"
+
+          NEW_IDS="$(jq -c --argjson seen "$PRUNED" '[.[] | select(. as $id | ($seen | index($id)) | not)]' <<<"$WAITING_IDS")"
+          NEW_COUNT="$(jq 'length' <<<"$NEW_IDS")"
+
+          if [ "$NEW_COUNT" -eq 0 ]; then
+            echo "No newly-waiting push-dispatch.yml runs this poll."
+            printf '%s' "$PRUNED" > "$SEEN"
+            exit 0
+          fi
+
+          echo "Found ${NEW_COUNT} newly-waiting run(s); briefing each."
+          UPDATED="$PRUNED"
+          for RUN_ID in $(jq -r '.[]' <<<"$NEW_IDS"); do
+            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}"
+
+            # Stage 7: attach the actual diff so the human can review the
+            # real change, not just a run URL. Fetched via GitHub's own
+            # compare API (raw unified-diff media type) rather than local
+            # git commands: this checkout is shallow (fetch-depth 1, whatever
+            # this workflow's own trigger ref is), so it has neither the
+            # task branch's commits nor enough history for a three-dot
+            # merge-base diff locally. The compare API needs neither —
+            # best-effort only; a failure here degrades to the plain
+            # run-URL-only brief from before this stage, not a hard failure.
+            DIFF_FILE=".push-diff-${RUN_ID}.diff"
+            rm -f "$DIFF_FILE"
+            BRANCH="$(gh run view "$RUN_ID" --json headBranch --jq '.headBranch' 2>/dev/null || true)"
+            DIFF_ARGS=()
+            if [ -n "$BRANCH" ]; then
+              if gh api -H "Accept: application/vnd.github.v3.diff" \
+                  "repos/${{ github.repository }}/compare/main...${BRANCH}" \
+                  > "$DIFF_FILE" 2>/dev/null && [ -s "$DIFF_FILE" ]; then
+                DIFF_ARGS=(--diff-file "$DIFF_FILE")
+              else
+                echo "Could not fetch diff for run ${RUN_ID} (branch ${BRANCH:-unknown}); briefing without it." >&2
+                rm -f "$DIFF_FILE"
+              fi
+            fi
+
+            if .claude/skills/weaponx-push/bin/push-bridge.sh brief \
+                --id "approve-${RUN_ID}" \
+                --text "A weaponx run is waiting on your ship approval. Review before deciding: ${RUN_URL}" \
+                --option "Approve" --option "Reject" \
+                --timeout 86400 \
+                "${DIFF_ARGS[@]}"; then
+              UPDATED="$(jq -c --argjson id "$RUN_ID" '. + [$id]' <<<"$UPDATED")"
+            else
+              echo "Failed to post approval brief for run ${RUN_ID}, will retry next poll (not added to seen cache)." >&2
+            fi
+            rm -f "$DIFF_FILE"
+          done
+          printf '%s' "$UPDATED" > "$SEEN"
+
+      # Second isolated capability block: relays a resolved Telegram reply
+      # to GitHub's deployment-review API using the dedicated-account PAT
+      # (WEAPONX_APPROVAL_REVIEWER_PAT — see SETUP.md; classic PAT, full
+      # `repo` scope, since that specific endpoint requires it and
+      # fine-grained tokens cannot target a repo this account doesn't own —
+      # confirmed against GitHub's own docs, not assumed). Scoped to this
+      # one step only; never exposed to push-dispatch.yml's `run` job, which
+      # executes semi-trusted generated commands.
+      - name: Relay approval decision to GitHub
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          APPROVAL_PAT: ${{ secrets.WEAPONX_APPROVAL_REVIEWER_PAT }}
+        run: |
+          set -uo pipefail
+          if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${APPROVAL_PAT}" ]; then
+            exit 0
+          fi
+          [ -f .push-raw-response.json ] || exit 0
+          [ -f .push-approval-seen ] || exit 0
+
+          RESP="$(cat .push-raw-response.json)"
+          SEEN_IDS="$(cat .push-approval-seen)"
+
+          for RUN_ID in $(jq -r '.[]' <<<"$SEEN_IDS"); do
+            DECISION_ID="approve-${RUN_ID}"
+            IDPFX="${DECISION_ID}|"
+
+            # Button tap: callback_data "approve-<run_id>|0" (Approve) or
+            # "...|1" (Reject) — same encoding push-bridge.sh's do_brief uses.
+            CB_DATA="$(jq -r --arg chat "$TELEGRAM_CHAT_ID" --arg idpfx "$IDPFX" \
+              '[.result[] | select(.callback_query != null) | select(.callback_query.message.chat.id|tostring == $chat) | select(.callback_query.data | startswith($idpfx))] | last | .callback_query.data // empty' \
+              <<<"$RESP")"
+
+            DECISION=""
+            if [ -n "$CB_DATA" ]; then
+              IDX="${CB_DATA#"$IDPFX"}"
+              [ "$IDX" = "0" ] && DECISION="approved"
+              [ "$IDX" = "1" ] && DECISION="rejected"
+            else
+              # Typed fallback: a bare "approve"/"reject" (case-insensitive)
+              # sent from the allow-listed chat while this decision is
+              # pending. Simple on purpose — this is a fallback path, not
+              # the primary interaction (buttons are).
+              TEXT_REPLY="$(jq -r --arg chat "$TELEGRAM_CHAT_ID" \
+                '[.result[] | select(.message.chat.id|tostring == $chat) | select(.message.text != null)] | last | .message.text // empty' \
+                <<<"$RESP")"
+              case "$(echo "$TEXT_REPLY" | tr '[:upper:]' '[:lower:]')" in
+                approve) DECISION="approved" ;;
+                reject) DECISION="rejected" ;;
+              esac
+            fi
+
+            [ -z "$DECISION" ] && continue
+
+            echo "Relaying decision '${DECISION}' for run ${RUN_ID}..."
+            ENV_LOOKUP="$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer ${APPROVAL_PAT}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${RUN_ID}/pending_deployments")"
+            ENV_STATUS="$(echo "$ENV_LOOKUP" | tail -n1)"
+            ENV_BODY="$(echo "$ENV_LOOKUP" | sed '$d')"
+
+            if [ "$ENV_STATUS" != "200" ]; then
+              echo "GET pending_deployments failed (HTTP ${ENV_STATUS}): ${ENV_BODY}" >&2
+              curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                --data-urlencode "text=Couldn't relay your decision (${ENV_STATUS} — PAT may be expired, missing scope, or the run is no longer waiting). Please use the GitHub UI/Mobile app for this one: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}" \
+                --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+              continue
+            fi
+
+            ENV_ID="$(echo "$ENV_BODY" | jq -r '.[] | select(.environment.name=="weaponx-approval") | .environment.id')"
+            if [ -z "$ENV_ID" ]; then
+              echo "No weaponx-approval pending_deployment found for run ${RUN_ID} (already resolved elsewhere?)." >&2
+              curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                --data-urlencode "text=Already handled — that run isn't waiting on approval anymore, no action needed." \
+                --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+              continue
+            fi
+
+            REVIEW_BODY="$(jq -nc --argjson env "$ENV_ID" --arg state "$DECISION" --arg comment "Relayed via Telegram (chat ${TELEGRAM_CHAT_ID}): ${DECISION}" \
+              '{environment_ids: [$env], state: $state, comment: $comment}')"
+            RELAY="$(curl -sS -w '\n%{http_code}' -X POST -H "Authorization: Bearer ${APPROVAL_PAT}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${RUN_ID}/pending_deployments" \
+              -d "$REVIEW_BODY")"
+            RELAY_STATUS="$(echo "$RELAY" | tail -n1)"
+
+            if [ "$RELAY_STATUS" = "200" ]; then
+              curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                --data-urlencode "text=Done — relayed your decision (${DECISION}) to GitHub." \
+                --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+            elif [ "$RELAY_STATUS" = "422" ]; then
+              # Distinguish self-caused (a double-tap already resolved this
+              # exact decision) from a genuine race (resolved differently,
+              # e.g. via the GitHub UI) — re-check current state rather than
+              # reporting a misleading failure right after a real success.
+              RECHECK="$(curl -sS -H "Authorization: Bearer ${APPROVAL_PAT}" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/runs/${RUN_ID}/pending_deployments")"
+              STILL_PENDING="$(echo "$RECHECK" | jq -r '[.[] | select(.environment.name=="weaponx-approval")] | length')"
+              if [ "$STILL_PENDING" = "0" ]; then
+                curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                  --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                  --data-urlencode "text=Already handled, no action needed — that decision was already resolved." \
+                  --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+              else
+                curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                  --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                  --data-urlencode "text=Couldn't relay your decision (422 — someone else may have acted on it differently). Check the GitHub UI: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}" \
+                  --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+              fi
+            else
+              echo "pending_deployments POST failed (HTTP ${RELAY_STATUS})" >&2
+              curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                --data-urlencode "text=Couldn't relay your decision (HTTP ${RELAY_STATUS} — PAT may be expired or missing scope). Please use the GitHub UI/Mobile app for this one: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}" \
+                --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+            fi
+
+            # Remove from the seen cache regardless of outcome above — a
+            # relay success, a self-caused 422, or a genuine race all mean
+            # this decision is done being tracked here (a real failure path
+            # still points the human at the GitHub UI, which doesn't depend
+            # on this cache at all).
+            jq -c --argjson id "$RUN_ID" '[.[] | select(. != $id)]' .push-approval-seen > .push-approval-seen.tmp
+            mv .push-approval-seen.tmp .push-approval-seen
+          done
+
+      # Third isolated capability block (Stage 8): a lightweight phone
+      # command router for /status, /cancel <id-or-branch-substring>, and
+      # /history. Reuses the SAME already-fetched Telegram response
+      # (.push-raw-response.json) as the /weaponx command-intake and
+      # approval-relay steps above — still the one safe cloud-side Telegram
+      # consumer (see the "single poller" comment on the Poll Telegram step
+      # above); no second getUpdates call, no second poller. Gated by the
+      # same allow-listed chat-id filter as every other PUSH command: the jq
+      # `select` below filters out any message from a different chat id
+      # before it reaches any command branch, which is what makes rejection
+      # of a non-allow-listed sender silent and total — an explicit "not
+      # authorized" reply would itself leak that the bot exists and
+      # responds to that chat.
+      - name: Phone command router (/status, /cancel, /history)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -uo pipefail
+          [ -z "${TELEGRAM_BOT_TOKEN}" ] && exit 0 || true
+          [ -f .push-raw-response.json ] || exit 0
+
+          RESP="$(cat .push-raw-response.json)"
+
+          reply_to_chat() {
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=$1" \
+              --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+          }
+
+          # Every command from the allow-listed chat this poll, oldest
+          # first — same "act on every match this window, not just the
+          # newest" discipline as the /weaponx command-intake step above (a
+          # second command landing in the same ~5-minute window must not be
+          # silently dropped).
+          COMMANDS_JSON="$(echo "$RESP" | jq -c \
+            --arg chat "${TELEGRAM_CHAT_ID}" '
+            [ .result[]
+              | select(.message.chat.id|tostring == $chat)
+              | select(.message.text != null)
+              | select(.message.text | test("^/(status|cancel|history)(\\s|$)"))
+              | .message.text
+            ]
+          ')"
+
+          echo "$COMMANDS_JSON" | jq -r '.[]' | while IFS= read -r CMD; do
+            case "$CMD" in
+              /status*)
+                RUNS="$(gh run list --workflow push-dispatch.yml --limit 5 \
+                  --json databaseId,status,conclusion,headBranch,createdAt \
+                  --jq '.[] | "• run \(.databaseId) — \(.headBranch) — \(if .status == "completed" then .conclusion else .status end) (\(.createdAt))"' 2>&1)"
+                if [ $? -ne 0 ]; then
+                  reply_to_chat "Couldn't fetch run status: ${RUNS}"
+                elif [ -z "$RUNS" ]; then
+                  reply_to_chat "No push-dispatch.yml runs found yet."
+                else
+                  reply_to_chat "$(printf 'Last 5 weaponx runs:\n%s' "$RUNS")"
+                fi
+                ;;
+
+              /history*)
+                RUNS="$(gh run list --workflow push-dispatch.yml --limit 15 \
+                  --json databaseId,status,conclusion,headBranch,createdAt \
+                  --jq '.[] | "• run \(.databaseId) — \(.headBranch) — \(if .status == "completed" then .conclusion else .status end) (\(.createdAt))"' 2>&1)"
+                if [ $? -ne 0 ]; then
+                  reply_to_chat "Couldn't fetch run history: ${RUNS}"
+                else
+                  # Trace files (state/weaponx/*.md) only exist for runs
+                  # that were merged back to main, so they'd MISS recent
+                  # activity if used as the primary source here — gh run
+                  # list above is the primary source; this is only a
+                  # pointer at supplementary older detail, per the plan.
+                  TRACE_NOTE=""
+                  if [ -d state/weaponx ]; then
+                    TRACE_COUNT="$(find state/weaponx -maxdepth 1 -name '*.md' ! -name 'README.md' ! -name 'discovery-log.md' | wc -l | tr -d ' ')"
+                    TRACE_NOTE="$(printf '\n\n(%s trace file(s) with full run detail also available under state/weaponx/.)' "$TRACE_COUNT")"
+                  fi
+                  reply_to_chat "$(printf 'Last 15 weaponx runs:\n%s%s' "${RUNS:-none yet}" "$TRACE_NOTE")"
+                fi
+                ;;
+
+              /cancel*)
+                ARG="$(echo "$CMD" | sed -E 's#^/cancel[[:space:]]*##')"
+                if [ -z "$ARG" ]; then
+                  reply_to_chat "Usage: /cancel <run id from /status> — e.g. /cancel 31272395710"
+                  continue
+                fi
+
+                TARGET_ID="$ARG"
+                case "$ARG" in
+                  *[!0-9]*)
+                    # Not a bare numeric run id — treat as a branch-name
+                    # substring and match the most recent push-dispatch.yml
+                    # run whose headBranch contains it.
+                    TARGET_ID="$(gh run list --workflow push-dispatch.yml --limit 20 \
+                      --json databaseId,headBranch \
+                      --jq --arg s "$ARG" '[.[] | select(.headBranch | contains($s))] | first | .databaseId // empty' 2>/dev/null)"
+                    if [ -z "$TARGET_ID" ]; then
+                      reply_to_chat "No recent run found matching '${ARG}'. Use /status to see run ids."
+                      continue
+                    fi
+                    ;;
+                esac
+
+                CANCEL_OUT="$(gh run cancel "$TARGET_ID" 2>&1)"
+                CANCEL_EXIT=$?
+                if [ "$CANCEL_EXIT" -eq 0 ]; then
+                  reply_to_chat "Cancelled run ${TARGET_ID}."
+                else
+                  # Never assume success, and never just echo a raw gh
+                  # error either — check whether the run is already done
+                  # first (the common case: a /cancel arriving after the run
+                  # finished) and say so plainly, rather than a generic
+                  # failure message that implies something went wrong.
+                  VIEW="$(gh run view "$TARGET_ID" --json status,conclusion --jq '"\(.status)/\(.conclusion // "n/a")"' 2>/dev/null)"
+                  if [ -n "$VIEW" ]; then
+                    reply_to_chat "Couldn't cancel run ${TARGET_ID} — it's already ${VIEW}, nothing to cancel."
+                  else
+                    reply_to_chat "Couldn't cancel run ${TARGET_ID}: ${CANCEL_OUT}"
+                  fi
+                fi
+                ;;
+            esac
           done
