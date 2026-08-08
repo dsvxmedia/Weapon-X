@@ -67,9 +67,57 @@ iso_to_epoch() {
   date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null
 }
 
+html_escape() {
+  # $1 = raw text destined for a Telegram parse_mode=HTML message BODY.
+  # Telegram's HTML mode requires escaping exactly these three characters
+  # outside markup/attribute contexts — no more, no less. Escaping quotes
+  # too would be wrong (unnecessary) and escaping less would let a literal
+  # "<" in ordinary text (code snippets, comparisons, generics) be
+  # misparsed as the start of a tag, breaking the whole send.
+  #
+  # NEVER pass this function's output back through itself, and never use it
+  # on text meant for an inline-keyboard BUTTON LABEL — Telegram renders
+  # button labels as literal plain text with no HTML interpretation, so an
+  # escaped string would show a literal "&amp;" on the button face instead
+  # of "&". Keep raw-for-label and escaped-for-body as separate variables,
+  # never the same string reused in both places.
+  local s="$1"
+  s="${s//&/&amp;}"
+  s="${s//</&lt;}"
+  s="${s//>/&gt;}"
+  printf '%s' "$s"
+}
+
 # ---------------------------------------------------------------------------
 # send — POST a message to the allow-listed chat
 # ---------------------------------------------------------------------------
+
+# _send_raw: the actual curl POST, parse_mode=HTML, NO escaping — trusts the
+# caller has already prepared a safe body. Two callers:
+#   - do_send (below): escapes its whole --text argument first, since its
+#     existing real callers (e.g. weaponx's orchestrator) pass plain dynamic
+#     text and expect plain-text semantics, same as before this stage.
+#   - do_brief: composes a body itself from html_escape'd dynamic pieces
+#     plus literal HTML markup it adds directly (e.g. Stage 2's <b> bolding);
+#     it must call _send_raw directly, never do_send, or its already-escaped
+#     text would be escaped a second time.
+# Splitting this out is what makes "escape once, at exactly one point per
+# caller" possible instead of double-escaping or leaving a gap.
+_send_raw() {
+  local text="$1"
+  local resp
+  resp="$(curl -sS -X POST "$(api_url sendMessage)" \
+    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=${text}" \
+    --data-urlencode "parse_mode=HTML" \
+    --data-urlencode "disable_web_page_preview=true")" || {
+      echo "push-bridge: curl failed" >&2; exit 5; }
+
+  if [ "$(printf '%s' "$resp" | jq -r '.ok')" != "true" ]; then
+    echo "push-bridge: Telegram API error: $(printf '%s' "$resp" | jq -r '.description // "unknown"')" >&2
+    exit 5
+  fi
+}
 
 do_send() {
   local text=""
@@ -84,17 +132,7 @@ do_send() {
     exit 3
   fi
 
-  local resp
-  resp="$(curl -sS -X POST "$(api_url sendMessage)" \
-    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-    --data-urlencode "text=${text}" \
-    --data-urlencode "disable_web_page_preview=true")" || {
-      echo "push-bridge send: curl failed" >&2; exit 5; }
-
-  if [ "$(printf '%s' "$resp" | jq -r '.ok')" != "true" ]; then
-    echo "push-bridge send: Telegram API error: $(printf '%s' "$resp" | jq -r '.description // "unknown"')" >&2
-    exit 5
-  fi
+  _send_raw "$(html_escape "$text")"
 }
 
 # ---------------------------------------------------------------------------
@@ -136,18 +174,23 @@ do_brief() {
 
   # Compose the message body: the brief, the options, and always an explicit
   # free-text escape hatch so the operator is never boxed into approve/deny.
-  local body="$text"
+  # Every dynamic piece (text, each option) goes through html_escape before
+  # concatenation; the literal boilerplate strings below contain no
+  # &/</> and don't need it. Calls _send_raw directly (not do_send) since
+  # this body is already fully escaped — do_send would escape it again.
+  local body
+  body="$(html_escape "$text")"
   if [ "${#options[@]}" -gt 0 ]; then
     body+=$'\n\nOptions:'
     local o
     for o in "${options[@]}"; do
-      body+=$'\n'"• ${o}"
+      body+=$'\n'"• $(html_escape "$o")"
     done
   fi
   body+=$'\n\nReply with the option you want, or just tell me in your own words what to do instead.'
-  body+=$'\n\n(decision id: '"${id}"')'
+  body+=$'\n\n(decision id: '"$(html_escape "$id")"')'
 
-  do_send --text "$body"
+  _send_raw "$body"
 }
 
 # ---------------------------------------------------------------------------
